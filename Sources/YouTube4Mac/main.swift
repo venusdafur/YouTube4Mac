@@ -51,6 +51,15 @@ enum ThemeMode: String, CaseIterable, Identifiable {
             "light"
         }
     }
+
+    var youtubePrefValue: String {
+        switch self {
+        case .dark:
+            "40000400"
+        case .light:
+            "40080000"
+        }
+    }
 }
 
 struct WebView: NSViewRepresentable {
@@ -70,14 +79,57 @@ struct WebView: NSViewRepresentable {
         controller.addUserScript(
             WKUserScript(
                 source: """
-                (() => {
-                    if (!document.getElementById('youtube4mac-theme')) {
-                        const style = document.createElement('style');
-                        style.id = 'youtube4mac-theme';
-                        document.documentElement.appendChild(style);
-                    }
-                })();
-                """,
+                    (() => {
+                        const readPref = () => {
+                            const match = document.cookie.match(/(?:^|;\\s*)PREF=([^;]+)/);
+                            return match ? decodeURIComponent(match[1]) : '';
+                        };
+
+                        const writePref = (value) => {
+                            document.cookie = `PREF=${encodeURIComponent(value)}; path=/; domain=.youtube.com; max-age=31536000; SameSite=Lax`;
+                        };
+
+                        const withThemePref = (mode) => {
+                            const entries = readPref()
+                                .split('&')
+                                .filter(Boolean)
+                                .filter((entry) => !entry.startsWith('f6='));
+                            const prefValue = mode === 'dark' ? '\(ThemeMode.dark.youtubePrefValue)' : '\(ThemeMode.light.youtubePrefValue)';
+                            entries.push(`f6=${prefValue}`);
+
+                            return entries.join('&');
+                        };
+
+                        const applyTheme = (shouldReload) => {
+                            const mode = window.youtube4macTheme || '\(themeMode.cssScheme)';
+                            const isDark = mode === 'dark';
+                            const nextPref = withThemePref(mode);
+                            const currentPref = readPref();
+
+                            [document.documentElement, document.body, document.querySelector('ytd-app')].forEach((node) => {
+                                if (!node) return;
+
+                                if (isDark) {
+                                    node.setAttribute('dark', '');
+                                    node.setAttribute('dark-theme', '');
+                                } else {
+                                    node.removeAttribute('dark');
+                                    node.removeAttribute('dark-theme');
+                                }
+                            });
+
+                            if (currentPref !== nextPref) {
+                                writePref(nextPref);
+                                if (shouldReload) {
+                                    location.reload();
+                                }
+                            }
+                        };
+
+                        window.youtube4macApplyTheme = applyTheme;
+                        applyTheme(false);
+                    })();
+                    """,
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: true
             )
@@ -85,50 +137,50 @@ struct WebView: NSViewRepresentable {
         controller.addUserScript(
             WKUserScript(
                 source: """
-                (() => {
-                    const selectors = [
-                        'ytd-display-ad-renderer',
-                        'ytd-ad-slot-renderer',
-                        'ytd-video-masthead-ad-v3-renderer',
-                        'ytd-in-feed-ad-layout-renderer',
-                        'ytm-promoted-sparkles-web-renderer',
-                        '.ytd-promoted-sparkles-web-renderer',
-                        '.ytp-ad-overlay-container',
-                        '.ytp-ad-message-container',
-                        '[layout*="display-ad-renderer"]',
-                        '[class*="ytd-display-ad-renderer"]'
-                    ];
+                    (() => {
+                        const selectors = [
+                            'ytd-display-ad-renderer',
+                            'ytd-ad-slot-renderer',
+                            'ytd-video-masthead-ad-v3-renderer',
+                            'ytd-in-feed-ad-layout-renderer',
+                            'ytm-promoted-sparkles-web-renderer',
+                            '.ytd-promoted-sparkles-web-renderer',
+                            '.ytp-ad-overlay-container',
+                            '.ytp-ad-message-container',
+                            '[layout*="display-ad-renderer"]',
+                            '[class*="ytd-display-ad-renderer"]'
+                        ];
 
-                    const ensureStyle = () => {
-                        if (document.getElementById('youtube4mac-adblock-style')) return;
-                        const style = document.createElement('style');
-                        style.id = 'youtube4mac-adblock-style';
-                        style.textContent = `${selectors.join(',')} { display: none !important; }`;
-                        document.documentElement.appendChild(style);
-                    };
+                        const ensureStyle = () => {
+                            if (document.getElementById('youtube4mac-adblock-style')) return;
+                            const style = document.createElement('style');
+                            style.id = 'youtube4mac-adblock-style';
+                            style.textContent = `${selectors.join(',')} { display: none !important; }`;
+                            document.documentElement.appendChild(style);
+                        };
 
-                    const hideAds = () => {
-                        ensureStyle();
-                        selectors.forEach((selector) => {
-                            document.querySelectorAll(selector).forEach((node) => node.remove());
+                        const hideAds = () => {
+                            ensureStyle();
+                            selectors.forEach((selector) => {
+                                document.querySelectorAll(selector).forEach((node) => node.remove());
+                            });
+
+                            document.querySelector('.ytp-ad-skip-button, .ytp-skip-ad-button, .ytp-ad-skip-button-modern')?.click();
+
+                            const video = document.querySelector('video');
+                            if (video && document.querySelector('.ad-showing')) {
+                                const duration = Number.isFinite(video.duration) ? video.duration : 0;
+                                video.currentTime = duration > 0 ? duration : 9999;
+                            }
+                        };
+
+                        hideAds();
+                        new MutationObserver(hideAds).observe(document.documentElement, {
+                            childList: true,
+                            subtree: true
                         });
-
-                        document.querySelector('.ytp-ad-skip-button, .ytp-skip-ad-button, .ytp-ad-skip-button-modern')?.click();
-
-                        const video = document.querySelector('video');
-                        if (video && document.querySelector('.ad-showing')) {
-                            const duration = Number.isFinite(video.duration) ? video.duration : 0;
-                            video.currentTime = duration > 0 ? duration : 9999;
-                        }
-                    };
-
-                    hideAds();
-                    new MutationObserver(hideAds).observe(document.documentElement, {
-                        childList: true,
-                        subtree: true
-                    });
-                })();
-                """,
+                    })();
+                    """,
                 injectionTime: .atDocumentEnd,
                 forMainFrameOnly: true
             )
@@ -150,17 +202,13 @@ struct WebView: NSViewRepresentable {
     }
 
     private func applyTheme(_ themeMode: ThemeMode, to webView: WKWebView) {
-        webView.appearance = themeMode == .dark ? NSAppearance(named: .darkAqua) : NSAppearance(named: .aqua)
+        webView.appearance =
+            themeMode == .dark ? NSAppearance(named: .darkAqua) : NSAppearance(named: .aqua)
         webView.evaluateJavaScript(
             """
             (() => {
-                const style = document.getElementById('youtube4mac-theme');
-                if (!style) return;
-                style.textContent = `
-                    :root {
-                        color-scheme: \(themeMode.cssScheme);
-                    }
-                `;
+                window.youtube4macTheme = '\(themeMode.cssScheme)';
+                window.youtube4macApplyTheme?.(true);
             })();
             """
         )
@@ -170,7 +218,8 @@ struct WebView: NSViewRepresentable {
         private var didInstallBlocker = false
         private var didStartInitialLoad = false
 
-        func installContentBlocker(into controller: WKUserContentController, for webView: WKWebView) {
+        func installContentBlocker(into controller: WKUserContentController, for webView: WKWebView)
+        {
             WKContentRuleListStore.default().compileContentRuleList(
                 forIdentifier: AppConfig.adBlockerIdentifier,
                 encodedContentRuleList: Self.contentBlockingRules
@@ -207,43 +256,43 @@ struct WebView: NSViewRepresentable {
         }
 
         private static let contentBlockingRules = """
-        [
-          {
-            "trigger": {
-              "url-filter": "https?://([A-Za-z0-9.-]+\\\\.)?(doubleclick\\\\.net|googlesyndication\\\\.com|googleadservices\\\\.com|googletagmanager\\\\.com)/.*"
-            },
-            "action": {
-              "type": "block"
-            }
-          },
-          {
-            "trigger": {
-              "url-filter": "https?://([A-Za-z0-9.-]+\\\\.)?youtube\\\\.com/api/stats/ads.*"
-            },
-            "action": {
-              "type": "block"
-            }
-          },
-          {
-            "trigger": {
-              "url-filter": "https?://([A-Za-z0-9.-]+\\\\.)?youtubei\\\\.googleapis\\\\.com/.*ad.*"
-            },
-            "action": {
-              "type": "block"
-            }
-          },
-          {
-            "trigger": {
-              "url-filter": ".*",
-              "if-domain": ["www.youtube.com", "youtube.com", "m.youtube.com"]
-            },
-            "action": {
-              "type": "css-display-none",
-              "selector": "ytd-display-ad-renderer, ytd-ad-slot-renderer, ytd-video-masthead-ad-v3-renderer, ytd-in-feed-ad-layout-renderer, ytm-promoted-sparkles-web-renderer, .ytd-promoted-sparkles-web-renderer, .ytp-ad-overlay-container, .ytp-ad-message-container"
-            }
-          }
-        ]
-        """
+            [
+              {
+                "trigger": {
+                  "url-filter": "https?://([A-Za-z0-9.-]+\\\\.)?(doubleclick\\\\.net|googlesyndication\\\\.com|googleadservices\\\\.com|googletagmanager\\\\.com)/.*"
+                },
+                "action": {
+                  "type": "block"
+                }
+              },
+              {
+                "trigger": {
+                  "url-filter": "https?://([A-Za-z0-9.-]+\\\\.)?youtube\\\\.com/api/stats/ads.*"
+                },
+                "action": {
+                  "type": "block"
+                }
+              },
+              {
+                "trigger": {
+                  "url-filter": "https?://([A-Za-z0-9.-]+\\\\.)?youtubei\\\\.googleapis\\\\.com/.*ad.*"
+                },
+                "action": {
+                  "type": "block"
+                }
+              },
+              {
+                "trigger": {
+                  "url-filter": ".*",
+                  "if-domain": ["www.youtube.com", "youtube.com", "m.youtube.com"]
+                },
+                "action": {
+                  "type": "css-display-none",
+                  "selector": "ytd-display-ad-renderer, ytd-ad-slot-renderer, ytd-video-masthead-ad-v3-renderer, ytd-in-feed-ad-layout-renderer, ytm-promoted-sparkles-web-renderer, .ytd-promoted-sparkles-web-renderer, .ytp-ad-overlay-container, .ytp-ad-message-container"
+                }
+              }
+            ]
+            """
     }
 }
 
