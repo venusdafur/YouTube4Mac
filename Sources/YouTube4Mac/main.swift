@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 import WebKit
 
@@ -5,6 +6,8 @@ private enum AppConfig {
     static let homeURL = URL(string: "https://www.youtube.com")!
     static let adBlockerIdentifier = "YouTube4MacAdBlock"
     static let githubURL = URL(string: "https://github.com/venusdafur/YouTube4Mac")!
+    static let returnYouTubeDislikeAPI = URL(string: "https://returnyoutubedislikeapi.com/votes")!
+    static let returnYouTubeDislikeMessageHandler = "youtube4macVideoChanged"
 }
 
 private enum AppIconLoader {
@@ -175,6 +178,7 @@ private enum CookieImporter {
 
 struct WebView: NSViewRepresentable {
     let isAdBlockEnabled: Bool
+    let isReturnYouTubeDislikeEnabled: Bool
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -187,6 +191,7 @@ struct WebView: NSViewRepresentable {
         configuration.mediaTypesRequiringUserActionForPlayback = []
 
         let controller = WKUserContentController()
+        controller.add(context.coordinator, name: AppConfig.returnYouTubeDislikeMessageHandler)
         controller.addUserScript(
             WKUserScript(
                 source: """
@@ -248,6 +253,166 @@ struct WebView: NSViewRepresentable {
                 forMainFrameOnly: true
             )
         )
+        controller.addUserScript(
+            WKUserScript(
+                source: """
+                    (() => {
+                        const formatDislikes = (count) => {
+                            try {
+                                return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(count);
+                            } catch {
+                                return String(count);
+                            }
+                        };
+
+                        const getVideoId = () => {
+                            const url = new URL(window.location.href);
+                            if (url.pathname === '/watch') {
+                                return url.searchParams.get('v');
+                            }
+                            if (url.pathname.startsWith('/shorts/')) {
+                                return url.pathname.split('/')[2] || null;
+                            }
+                            return null;
+                        };
+
+                        const notifyNative = () => {
+                            const videoId = getVideoId();
+                            window.webkit?.messageHandlers?.\(AppConfig.returnYouTubeDislikeMessageHandler)?.postMessage({
+                                videoId
+                            });
+                        };
+
+                        const findDislikeButton = () => {
+                            const segmentedDislike = document.querySelector('#segmented-dislike-button button');
+                            if (segmentedDislike) {
+                                return segmentedDislike;
+                            }
+
+                            const segmentedRenderer = document.querySelector('ytd-segmented-like-dislike-button-renderer');
+                            if (segmentedRenderer) {
+                                const buttons = segmentedRenderer.querySelectorAll('button');
+                                if (buttons.length >= 2) {
+                                    return buttons[1];
+                                }
+                            }
+
+                            const directMatch = document.querySelector('ytd-toggle-button-renderer button');
+                            if (directMatch && ((directMatch.getAttribute('aria-label') || '').toLowerCase().includes('dislike'))) {
+                                return directMatch;
+                            }
+
+                            const buttons = Array.from(document.querySelectorAll('ytd-segmented-like-dislike-button-renderer button, ytd-menu-renderer ytd-toggle-button-renderer button'));
+                            return buttons.find((button) => {
+                                const label = (button.getAttribute('aria-label') || '').toLowerCase();
+                                return label.includes('dislike');
+                            }) || null;
+                        };
+
+                        const ensureDislikeBadge = () => {
+                            let badge = document.querySelector('.youtube4mac-ryd-badge');
+                            if (badge) return badge;
+
+                            const host =
+                                document.querySelector('#above-the-fold #title') ||
+                                document.querySelector('ytd-watch-metadata #title') ||
+                                document.querySelector('ytd-watch-metadata') ||
+                                document.querySelector('#above-the-fold');
+
+                            if (!host) return null;
+
+                            badge = document.createElement('div');
+                            badge.className = 'youtube4mac-ryd-badge';
+                            badge.style.display = 'inline-flex';
+                            badge.style.alignItems = 'center';
+                            badge.style.justifyContent = 'flex-start';
+                            badge.style.width = 'fit-content';
+                            badge.style.minHeight = '32px';
+                            badge.style.padding = '0 12px';
+                            badge.style.marginTop = '10px';
+                            badge.style.borderRadius = '16px';
+                            badge.style.background = 'rgba(255,255,255,0.08)';
+                            badge.style.color = 'var(--yt-spec-text-primary, #f1f1f1)';
+                            badge.style.fontSize = '1.25rem';
+                            badge.style.fontWeight = '600';
+                            badge.style.lineHeight = '1';
+                            badge.style.whiteSpace = 'nowrap';
+                            badge.textContent = '';
+
+                            host.appendChild(badge);
+                            return badge;
+                        };
+
+                        const applyDislikeCount = () => {
+                            const enabled = !!window.youtube4macReturnYouTubeDislikeEnabled;
+                            const button = findDislikeButton();
+                            const badge = ensureDislikeBadge();
+
+                            if (!enabled) {
+                                if (badge) {
+                                    badge.textContent = '';
+                                    badge.style.display = 'none';
+                                }
+                                if (button) {
+                                    delete button.dataset.youtube4macRydVideoId;
+                                }
+                                return;
+                            }
+
+                            if (!button || !badge) return;
+                            notifyNative();
+                        };
+
+                        window.youtube4macSetDislikeCount = (videoId, dislikes) => {
+                            const button = findDislikeButton();
+                            const badge = ensureDislikeBadge();
+                            if (!button || !badge) return;
+
+                            if (!window.youtube4macReturnYouTubeDislikeEnabled) {
+                                badge.textContent = '';
+                                badge.style.display = 'none';
+                                delete button.dataset.youtube4macRydVideoId;
+                                return;
+                            }
+
+                            if (!videoId || typeof dislikes !== 'number') {
+                                badge.textContent = '';
+                                badge.style.display = 'none';
+                                delete button.dataset.youtube4macRydVideoId;
+                                return;
+                            }
+
+                            badge.textContent = `Dislikes: ${formatDislikes(dislikes)}`;
+                            badge.style.display = 'inline-flex';
+                            button.setAttribute('aria-label', `Dislike ${formatDislikes(dislikes)}`);
+                            button.dataset.youtube4macRydVideoId = videoId;
+                        };
+
+                        window.youtube4macApplyDislikes = applyDislikeCount;
+                        applyDislikeCount();
+
+                        if (!window.youtube4macDislikeObserver) {
+                            window.youtube4macDislikeObserver = new MutationObserver(() => {
+                                window.youtube4macApplyDislikes?.();
+                            });
+                            window.youtube4macDislikeObserver.observe(document.documentElement, {
+                                childList: true,
+                                subtree: true
+                            });
+                            window.addEventListener('yt-navigate-finish', () => {
+                                const button = findDislikeButton();
+                                if (button) {
+                                    delete button.dataset.youtube4macRydVideoId;
+                                }
+                                notifyNative();
+                            });
+                        }
+                    })();
+                    """,
+                injectionTime: .atDocumentEnd,
+                forMainFrameOnly: true
+            )
+        )
         configuration.userContentController = controller
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
@@ -255,34 +420,51 @@ struct WebView: NSViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.setValue(false, forKey: "drawsBackground")
         context.coordinator.installContentBlocker(into: controller, for: webView, isEnabled: isAdBlockEnabled)
-        applyPreferences(isAdBlockEnabled: isAdBlockEnabled, to: webView)
+        applyPreferences(
+            isAdBlockEnabled: isAdBlockEnabled,
+            isReturnYouTubeDislikeEnabled: isReturnYouTubeDislikeEnabled,
+            to: webView
+        )
         return webView
     }
 
     func updateNSView(_ nsView: WKWebView, context: Context) {
         context.coordinator.updateAdBlockState(isAdBlockEnabled, for: nsView)
-        applyPreferences(isAdBlockEnabled: isAdBlockEnabled, to: nsView)
+        applyPreferences(
+            isAdBlockEnabled: isAdBlockEnabled,
+            isReturnYouTubeDislikeEnabled: isReturnYouTubeDislikeEnabled,
+            to: nsView
+        )
         context.coordinator.loadIfNeeded(nsView)
     }
 
-    private func applyPreferences(isAdBlockEnabled: Bool, to webView: WKWebView) {
+    private func applyPreferences(
+        isAdBlockEnabled: Bool,
+        isReturnYouTubeDislikeEnabled: Bool,
+        to webView: WKWebView
+    ) {
         webView.evaluateJavaScript(
             """
             (() => {
                 window.youtube4macAdBlockEnabled = \(isAdBlockEnabled ? "true" : "false");
+                window.youtube4macReturnYouTubeDislikeEnabled = \(isReturnYouTubeDislikeEnabled ? "true" : "false");
                 window.youtube4macApplyAdBlock?.();
+                window.youtube4macApplyDislikes?.();
             })();
             """
         )
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         private var didInstallBlocker = false
         private var didStartInitialLoad = false
         private var isAdBlockEnabled = true
+        private weak var webView: WKWebView?
+        private var lastFetchedVideoID: String?
 
         func installContentBlocker(into controller: WKUserContentController, for webView: WKWebView, isEnabled: Bool) {
             isAdBlockEnabled = isEnabled
+            self.webView = webView
             configureContentBlocker(in: controller) { [weak self] in
                 self?.didInstallBlocker = true
                 self?.loadIfNeeded(webView)
@@ -354,6 +536,57 @@ struct WebView: NSViewRepresentable {
             }
 
             decisionHandler(.allow)
+        }
+
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard message.name == AppConfig.returnYouTubeDislikeMessageHandler else { return }
+            guard
+                let body = message.body as? [String: Any],
+                let videoID = body["videoId"] as? String,
+                !videoID.isEmpty
+            else {
+                injectDislikeCount(nil, for: nil)
+                return
+            }
+
+            guard lastFetchedVideoID != videoID else { return }
+            lastFetchedVideoID = videoID
+            fetchDislikeCount(for: videoID)
+        }
+
+        private func fetchDislikeCount(for videoID: String) {
+            var components = URLComponents(url: AppConfig.returnYouTubeDislikeAPI, resolvingAgainstBaseURL: false)
+            components?.queryItems = [URLQueryItem(name: "videoId", value: videoID)]
+            guard let url = components?.url else { return }
+
+            URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+                guard let self else { return }
+                guard
+                    let data,
+                    let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                    let dislikes = payload["dislikes"] as? NSNumber
+                else {
+                    self.injectDislikeCount(nil, for: videoID)
+                    return
+                }
+
+                self.injectDislikeCount(dislikes.intValue, for: videoID)
+            }.resume()
+        }
+
+        private func injectDislikeCount(_ dislikes: Int?, for videoID: String?) {
+            DispatchQueue.main.async { [weak self] in
+                guard let webView = self?.webView else { return }
+
+                let videoArgument = videoID.map { "'\($0.replacingOccurrences(of: "'", with: "\\'"))'" } ?? "null"
+                let dislikeArgument = dislikes.map(String.init) ?? "null"
+
+                webView.evaluateJavaScript(
+                    """
+                    window.youtube4macSetDislikeCount?.(\(videoArgument), \(dislikeArgument));
+                    """
+                )
+            }
         }
 
         private static let contentBlockingRules = """
@@ -542,6 +775,7 @@ private struct CookieImportPanel: View {
 private struct FirstLaunchSplashView: View {
     @Binding var selectedTab: SettingsTab
     @Binding var isAdBlockEnabled: Bool
+    @Binding var isReturnYouTubeDislikeEnabled: Bool
     @Binding var cookieDomain: String
     @Binding var cookieText: String
     let cookieImportStatus: String?
@@ -576,11 +810,19 @@ private struct FirstLaunchSplashView: View {
                     .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
 
                     if selectedTab == .general {
-                        SplashToggleRow(
-                            title: "Enable ad blocking",
-                            subtitle: "Hide common YouTube ad surfaces and block common ad requests. Enabled by default.",
-                            isOn: $isAdBlockEnabled
-                        )
+                        VStack(spacing: 12) {
+                            SplashToggleRow(
+                                title: "Enable ad blocking",
+                                subtitle: "Hide common YouTube ad surfaces and block common ad requests. Enabled by default.",
+                                isOn: $isAdBlockEnabled
+                            )
+
+                            SplashToggleRow(
+                                title: "Return YouTube Dislike",
+                                subtitle: "Fetch dislike counts from returnyoutubedislikeapi.com and show them next to the dislike button.",
+                                isOn: $isReturnYouTubeDislikeEnabled
+                            )
+                        }
                     } else {
                         CookieImportPanel(
                             cookieDomain: $cookieDomain,
@@ -626,9 +868,11 @@ private struct FirstLaunchSplashView: View {
 
 struct ContentView: View {
     let appliedAdBlockEnabled: Bool
+    let appliedReturnYouTubeDislikeEnabled: Bool
     let isShowingOnboarding: Bool
     let needsRestart: Bool
     @Binding var draftAdBlockEnabled: Bool
+    @Binding var draftReturnYouTubeDislikeEnabled: Bool
     @Binding var selectedSettingsTab: SettingsTab
     @Binding var cookieDomain: String
     @Binding var cookieText: String
@@ -640,7 +884,10 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            WebView(isAdBlockEnabled: appliedAdBlockEnabled)
+            WebView(
+                isAdBlockEnabled: appliedAdBlockEnabled,
+                isReturnYouTubeDislikeEnabled: appliedReturnYouTubeDislikeEnabled
+            )
                 .ignoresSafeArea()
                 .blur(radius: (isShowingOnboarding || needsRestart) ? 18 : 0)
                 .allowsHitTesting(!(isShowingOnboarding || needsRestart))
@@ -649,6 +896,7 @@ struct ContentView: View {
                 FirstLaunchSplashView(
                     selectedTab: $selectedSettingsTab,
                     isAdBlockEnabled: $draftAdBlockEnabled,
+                    isReturnYouTubeDislikeEnabled: $draftReturnYouTubeDislikeEnabled,
                     cookieDomain: $cookieDomain,
                     cookieText: $cookieText,
                     cookieImportStatus: cookieImportStatus,
@@ -689,20 +937,22 @@ private struct RestartRequiredView: View {
                     .foregroundStyle(.secondary)
 
                 HStack(spacing: 12) {
-                    Button("Close") {
-                        dismissAction()
+                    Button(action: dismissAction) {
+                        Text("Close")
+                            .font(.system(size: 14, weight: .semibold))
+                            .frame(width: 132)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 10)
                     }
-                    .font(.system(size: 14, weight: .semibold))
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 10)
                     .buttonStyle(SettingsSecondaryButtonStyle())
 
-                    Button("Quit App") {
-                        quitAction()
+                    Button(action: quitAction) {
+                        Text("Quit App")
+                            .font(.system(size: 14, weight: .semibold))
+                            .frame(width: 132)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 10)
                     }
-                    .font(.system(size: 14, weight: .semibold))
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 10)
                     .buttonStyle(SettingsPrimaryButtonStyle())
                 }
             }
@@ -722,10 +972,13 @@ private struct RestartRequiredView: View {
 @main
 struct YouTube4MacApp: App {
     @AppStorage("isAdBlockEnabled") private var isAdBlockEnabled = true
+    @AppStorage("isReturnYouTubeDislikeEnabled") private var isReturnYouTubeDislikeEnabled = true
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
 
     @State private var appliedAdBlockEnabled = true
+    @State private var appliedReturnYouTubeDislikeEnabled = true
     @State private var draftAdBlockEnabled = true
+    @State private var draftReturnYouTubeDislikeEnabled = true
     @State private var isShowingSettings = false
     @State private var needsRestart = false
     @State private var selectedSettingsTab: SettingsTab = .general
@@ -741,9 +994,11 @@ struct YouTube4MacApp: App {
         WindowGroup {
             ContentView(
                 appliedAdBlockEnabled: appliedAdBlockEnabled,
+                appliedReturnYouTubeDislikeEnabled: appliedReturnYouTubeDislikeEnabled,
                 isShowingOnboarding: !hasCompletedOnboarding || isShowingSettings,
                 needsRestart: needsRestart,
                 draftAdBlockEnabled: $draftAdBlockEnabled,
+                draftReturnYouTubeDislikeEnabled: $draftReturnYouTubeDislikeEnabled,
                 selectedSettingsTab: $selectedSettingsTab,
                 cookieDomain: $cookieDomain,
                 cookieText: $cookieText,
@@ -775,10 +1030,12 @@ struct YouTube4MacApp: App {
 
     private func syncAppliedState() {
         appliedAdBlockEnabled = isAdBlockEnabled
+        appliedReturnYouTubeDislikeEnabled = isReturnYouTubeDislikeEnabled
     }
 
     private func syncDraftState() {
         draftAdBlockEnabled = isAdBlockEnabled
+        draftReturnYouTubeDislikeEnabled = isReturnYouTubeDislikeEnabled
     }
 
     private func importCookies() {
@@ -794,8 +1051,11 @@ struct YouTube4MacApp: App {
     }
 
     private func completeOnboarding() {
-        let didChange = draftAdBlockEnabled != isAdBlockEnabled
+        let didChange =
+            draftAdBlockEnabled != isAdBlockEnabled ||
+            draftReturnYouTubeDislikeEnabled != isReturnYouTubeDislikeEnabled
         isAdBlockEnabled = draftAdBlockEnabled
+        isReturnYouTubeDislikeEnabled = draftReturnYouTubeDislikeEnabled
         hasCompletedOnboarding = true
         isShowingSettings = false
         needsRestart = didChange
