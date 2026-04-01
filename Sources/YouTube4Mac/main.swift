@@ -309,49 +309,131 @@ struct WebView: NSViewRepresentable {
                             }) || null;
                         };
 
+                        const ensureDislikeContainer = () => {
+                            let container = document.querySelector('.youtube4mac-ryd-container');
+                            if (container) return container;
+
+                            const metadataHost =
+                                document.querySelector('#above-the-fold ytd-watch-metadata') ||
+                                document.querySelector('ytd-watch-flexy #above-the-fold') ||
+                                document.querySelector('ytd-watch-metadata');
+
+                            if (!metadataHost) return null;
+
+                            container = document.createElement('div');
+                            container.className = 'youtube4mac-ryd-container';
+                            container.style.display = 'flex';
+                            container.style.flexDirection = 'column';
+                            container.style.alignItems = 'flex-start';
+                            container.style.gap = '8px';
+                            container.style.marginTop = '12px';
+                            container.style.marginBottom = '8px';
+
+                            const anchor =
+                                metadataHost.querySelector('#top-row') ||
+                                metadataHost.querySelector('#actions') ||
+                                metadataHost.querySelector('#description') ||
+                                metadataHost.firstElementChild;
+
+                            if (anchor && anchor.parentNode) {
+                                anchor.parentNode.insertBefore(container, anchor);
+                            } else {
+                                metadataHost.appendChild(container);
+                            }
+
+                            return container;
+                        };
+
                         const ensureDislikeBadge = () => {
-                            let badge = document.querySelector('.youtube4mac-ryd-badge');
+                            const container = ensureDislikeContainer();
+                            if (!container) return null;
+
+                            let badge = container.querySelector('.youtube4mac-ryd-badge');
                             if (badge) return badge;
-
-                            const host =
-                                document.querySelector('#above-the-fold #title') ||
-                                document.querySelector('ytd-watch-metadata #title') ||
-                                document.querySelector('ytd-watch-metadata') ||
-                                document.querySelector('#above-the-fold');
-
-                            if (!host) return null;
 
                             badge = document.createElement('div');
                             badge.className = 'youtube4mac-ryd-badge';
-                            badge.style.display = 'inline-flex';
+                            badge.style.display = 'none';
                             badge.style.alignItems = 'center';
                             badge.style.justifyContent = 'flex-start';
                             badge.style.width = 'fit-content';
-                            badge.style.minHeight = '32px';
+                            badge.style.minHeight = '34px';
                             badge.style.padding = '0 12px';
-                            badge.style.marginTop = '10px';
-                            badge.style.borderRadius = '16px';
+                            badge.style.borderRadius = '17px';
                             badge.style.background = 'rgba(255,255,255,0.08)';
                             badge.style.color = 'var(--yt-spec-text-primary, #f1f1f1)';
-                            badge.style.fontSize = '1.25rem';
-                            badge.style.fontWeight = '600';
+                            badge.style.fontSize = '1.35rem';
+                            badge.style.fontWeight = '700';
                             badge.style.lineHeight = '1';
                             badge.style.whiteSpace = 'nowrap';
+                            badge.style.position = 'relative';
+                            badge.style.zIndex = '20';
                             badge.textContent = '';
 
-                            host.appendChild(badge);
+                            container.appendChild(badge);
                             return badge;
+                        };
+
+                        const ensureDislikeStatus = () => {
+                            const container = ensureDislikeContainer();
+                            if (!container) return null;
+
+                            let status = container.querySelector('.youtube4mac-ryd-status');
+                            if (status) return status;
+
+                            status = document.createElement('div');
+                            status.className = 'youtube4mac-ryd-status';
+                            status.style.fontSize = '1.15rem';
+                            status.style.lineHeight = '1.3';
+                            status.style.color = 'var(--yt-spec-text-secondary, #aaa)';
+                            status.style.opacity = '0.85';
+                            status.style.position = 'relative';
+                            status.style.zIndex = '20';
+                            status.textContent = '';
+                            container.appendChild(status);
+                            return status;
                         };
 
                         const applyDislikeCount = () => {
                             const enabled = !!window.youtube4macReturnYouTubeDislikeEnabled;
-                            const button = findDislikeButton();
                             const badge = ensureDislikeBadge();
+                            const status = ensureDislikeStatus();
 
                             if (!enabled) {
                                 if (badge) {
                                     badge.textContent = '';
                                     badge.style.display = 'none';
+                                }
+                                if (status) {
+                                    status.textContent = '';
+                                }
+                                return;
+                            }
+
+                            if (!badge) {
+                                if (status) {
+                                    status.textContent = 'RYD: waiting for metadata area';
+                                }
+                                return;
+                            }
+
+                            if (status) {
+                                status.textContent = 'RYD: loading dislike count...';
+                            }
+                            notifyNative();
+                        };
+
+                        window.youtube4macSetDislikeCount = (videoId, dislikes, statusText) => {
+                            const badge = ensureDislikeBadge();
+                            const status = ensureDislikeStatus();
+                            const button = findDislikeButton();
+                            if (!badge) return;
+
+                            if (!window.youtube4macReturnYouTubeDislikeEnabled) {
+                                badge.textContent = '';
+                                badge.style.display = 'none';
+                                if (status) {
+                                    status.textContent = '';
                                 }
                                 if (button) {
                                     delete button.dataset.youtube4macRydVideoId;
@@ -359,33 +441,27 @@ struct WebView: NSViewRepresentable {
                                 return;
                             }
 
-                            if (!button || !badge) return;
-                            notifyNative();
-                        };
-
-                        window.youtube4macSetDislikeCount = (videoId, dislikes) => {
-                            const button = findDislikeButton();
-                            const badge = ensureDislikeBadge();
-                            if (!button || !badge) return;
-
-                            if (!window.youtube4macReturnYouTubeDislikeEnabled) {
-                                badge.textContent = '';
-                                badge.style.display = 'none';
-                                delete button.dataset.youtube4macRydVideoId;
-                                return;
-                            }
-
                             if (!videoId || typeof dislikes !== 'number') {
                                 badge.textContent = '';
                                 badge.style.display = 'none';
-                                delete button.dataset.youtube4macRydVideoId;
+                                if (status) {
+                                    status.textContent = statusText || 'RYD: no dislike data';
+                                }
+                                if (button) {
+                                    delete button.dataset.youtube4macRydVideoId;
+                                }
                                 return;
                             }
 
                             badge.textContent = `Dislikes: ${formatDislikes(dislikes)}`;
                             badge.style.display = 'inline-flex';
-                            button.setAttribute('aria-label', `Dislike ${formatDislikes(dislikes)}`);
-                            button.dataset.youtube4macRydVideoId = videoId;
+                            if (status) {
+                                status.textContent = statusText || 'RYD: loaded';
+                            }
+                            if (button) {
+                                button.setAttribute('aria-label', `Dislike ${formatDislikes(dislikes)}`);
+                                button.dataset.youtube4macRydVideoId = videoId;
+                            }
                         };
 
                         window.youtube4macApplyDislikes = applyDislikeCount;
@@ -545,7 +621,7 @@ struct WebView: NSViewRepresentable {
                 let videoID = body["videoId"] as? String,
                 !videoID.isEmpty
             else {
-                injectDislikeCount(nil, for: nil)
+                injectDislikeCount(nil, for: nil, status: "RYD: no video id")
                 return
             }
 
@@ -566,24 +642,25 @@ struct WebView: NSViewRepresentable {
                     let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                     let dislikes = payload["dislikes"] as? NSNumber
                 else {
-                    self.injectDislikeCount(nil, for: videoID)
+                    self.injectDislikeCount(nil, for: videoID, status: "RYD: API returned no dislike count")
                     return
                 }
 
-                self.injectDislikeCount(dislikes.intValue, for: videoID)
+                self.injectDislikeCount(dislikes.intValue, for: videoID, status: "RYD: loaded")
             }.resume()
         }
 
-        private func injectDislikeCount(_ dislikes: Int?, for videoID: String?) {
+        private func injectDislikeCount(_ dislikes: Int?, for videoID: String?, status: String) {
             DispatchQueue.main.async { [weak self] in
                 guard let webView = self?.webView else { return }
 
                 let videoArgument = videoID.map { "'\($0.replacingOccurrences(of: "'", with: "\\'"))'" } ?? "null"
                 let dislikeArgument = dislikes.map(String.init) ?? "null"
+                let statusArgument = "'\(status.replacingOccurrences(of: "'", with: "\\'"))'"
 
                 webView.evaluateJavaScript(
                     """
-                    window.youtube4macSetDislikeCount?.(\(videoArgument), \(dislikeArgument));
+                    window.youtube4macSetDislikeCount?.(\(videoArgument), \(dislikeArgument), \(statusArgument));
                     """
                 )
             }
