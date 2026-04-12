@@ -7,8 +7,6 @@ private enum AppConfig {
     static let appleTVHomeURL = URL(string: "https://www.youtube.com/tv#/browse")!
     static let adBlockerIdentifier = "YouTube4MacAdBlock"
     static let githubURL = URL(string: "https://github.com/realcatdev/YouTube4Mac")!
-    static let returnYouTubeDislikeAPI = URL(string: "https://returnyoutubedislikeapi.com/votes")!
-    static let returnYouTubeDislikeMessageHandler = "youtube4macVideoChanged"
     static let closeAppMessageHandler = "youtube4macCloseApp"
     static let appleTVUserAgent = "Roku/DVP-9.10 (519.10E04111A)"
 
@@ -184,7 +182,6 @@ private enum CookieImporter {
 }
 
 struct WebView: NSViewRepresentable {
-    let isReturnYouTubeDislikeEnabled: Bool
     let isAppleTVMode: Bool
 
     func makeCoordinator() -> Coordinator {
@@ -198,7 +195,6 @@ struct WebView: NSViewRepresentable {
         configuration.mediaTypesRequiringUserActionForPlayback = []
 
         let controller = WKUserContentController()
-        controller.add(context.coordinator, name: AppConfig.returnYouTubeDislikeMessageHandler)
         controller.add(context.coordinator, name: AppConfig.closeAppMessageHandler)
         controller.addUserScript(
             WKUserScript(
@@ -397,242 +393,6 @@ struct WebView: NSViewRepresentable {
                 forMainFrameOnly: true
             )
         )
-        controller.addUserScript(
-            WKUserScript(
-                source: """
-                    (() => {
-                        const formatDislikes = (count) => {
-                            try {
-                                return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(count);
-                            } catch {
-                                return String(count);
-                            }
-                        };
-
-                        const getVideoId = () => {
-                            const url = new URL(window.location.href);
-                            if (url.pathname === '/watch') {
-                                return url.searchParams.get('v');
-                            }
-                            if (url.pathname.startsWith('/shorts/')) {
-                                return url.pathname.split('/')[2] || null;
-                            }
-                            return null;
-                        };
-
-                        const notifyNative = () => {
-                            const videoId = getVideoId();
-                            window.webkit?.messageHandlers?.\(AppConfig.returnYouTubeDislikeMessageHandler)?.postMessage({
-                                videoId
-                            });
-                        };
-
-                        const findDislikeButton = () => {
-                            const segmentedDislike = document.querySelector('#segmented-dislike-button button');
-                            if (segmentedDislike) {
-                                return segmentedDislike;
-                            }
-
-                            const segmentedRenderer = document.querySelector('ytd-segmented-like-dislike-button-renderer');
-                            if (segmentedRenderer) {
-                                const buttons = segmentedRenderer.querySelectorAll('button');
-                                if (buttons.length >= 2) {
-                                    return buttons[1];
-                                }
-                            }
-
-                            const directMatch = document.querySelector('ytd-toggle-button-renderer button');
-                            if (directMatch && ((directMatch.getAttribute('aria-label') || '').toLowerCase().includes('dislike'))) {
-                                return directMatch;
-                            }
-
-                            const buttons = Array.from(document.querySelectorAll('ytd-segmented-like-dislike-button-renderer button, ytd-menu-renderer ytd-toggle-button-renderer button'));
-                            return buttons.find((button) => {
-                                const label = (button.getAttribute('aria-label') || '').toLowerCase();
-                                return label.includes('dislike');
-                            }) || null;
-                        };
-
-                        const ensureDislikeContainer = () => {
-                            let container = document.querySelector('.youtube4mac-ryd-container');
-                            if (container) return container;
-
-                            const metadataHost =
-                                document.querySelector('#above-the-fold ytd-watch-metadata') ||
-                                document.querySelector('ytd-watch-flexy #above-the-fold') ||
-                                document.querySelector('ytd-watch-metadata');
-
-                            if (!metadataHost) return null;
-
-                            container = document.createElement('div');
-                            container.className = 'youtube4mac-ryd-container';
-                            container.style.display = 'flex';
-                            container.style.flexDirection = 'column';
-                            container.style.alignItems = 'flex-start';
-                            container.style.gap = '8px';
-                            container.style.marginTop = '12px';
-                            container.style.marginBottom = '8px';
-
-                            const anchor =
-                                metadataHost.querySelector('#top-row') ||
-                                metadataHost.querySelector('#actions') ||
-                                metadataHost.querySelector('#description') ||
-                                metadataHost.firstElementChild;
-
-                            if (anchor && anchor.parentNode) {
-                                anchor.parentNode.insertBefore(container, anchor);
-                            } else {
-                                metadataHost.appendChild(container);
-                            }
-
-                            return container;
-                        };
-
-                        const ensureDislikeBadge = () => {
-                            const container = ensureDislikeContainer();
-                            if (!container) return null;
-
-                            let badge = container.querySelector('.youtube4mac-ryd-badge');
-                            if (badge) return badge;
-
-                            badge = document.createElement('div');
-                            badge.className = 'youtube4mac-ryd-badge';
-                            badge.style.display = 'none';
-                            badge.style.alignItems = 'center';
-                            badge.style.justifyContent = 'flex-start';
-                            badge.style.width = 'fit-content';
-                            badge.style.minHeight = '34px';
-                            badge.style.padding = '0 12px';
-                            badge.style.borderRadius = '17px';
-                            badge.style.background = 'rgba(255,255,255,0.08)';
-                            badge.style.color = 'var(--yt-spec-text-primary, #f1f1f1)';
-                            badge.style.fontSize = '1.35rem';
-                            badge.style.fontWeight = '700';
-                            badge.style.lineHeight = '1';
-                            badge.style.whiteSpace = 'nowrap';
-                            badge.style.position = 'relative';
-                            badge.style.zIndex = '20';
-                            badge.textContent = '';
-
-                            container.appendChild(badge);
-                            return badge;
-                        };
-
-                        const ensureDislikeStatus = () => {
-                            const container = ensureDislikeContainer();
-                            if (!container) return null;
-
-                            let status = container.querySelector('.youtube4mac-ryd-status');
-                            if (status) return status;
-
-                            status = document.createElement('div');
-                            status.className = 'youtube4mac-ryd-status';
-                            status.style.fontSize = '1.15rem';
-                            status.style.lineHeight = '1.3';
-                            status.style.color = 'var(--yt-spec-text-secondary, #aaa)';
-                            status.style.opacity = '0.85';
-                            status.style.position = 'relative';
-                            status.style.zIndex = '20';
-                            status.textContent = '';
-                            container.appendChild(status);
-                            return status;
-                        };
-
-                        const applyDislikeCount = () => {
-                            const enabled = !!window.youtube4macReturnYouTubeDislikeEnabled;
-                            const badge = ensureDislikeBadge();
-                            const status = ensureDislikeStatus();
-
-                            if (!enabled) {
-                                if (badge) {
-                                    badge.textContent = '';
-                                    badge.style.display = 'none';
-                                }
-                                if (status) {
-                                    status.textContent = '';
-                                }
-                                return;
-                            }
-
-                            if (!badge) {
-                                if (status) {
-                                    status.textContent = 'RYD: waiting for metadata area';
-                                }
-                                return;
-                            }
-
-                            if (status) {
-                                status.textContent = 'RYD: loading dislike count...';
-                            }
-                            notifyNative();
-                        };
-
-                        window.youtube4macSetDislikeCount = (videoId, dislikes, statusText) => {
-                            const badge = ensureDislikeBadge();
-                            const status = ensureDislikeStatus();
-                            const button = findDislikeButton();
-                            if (!badge) return;
-
-                            if (!window.youtube4macReturnYouTubeDislikeEnabled) {
-                                badge.textContent = '';
-                                badge.style.display = 'none';
-                                if (status) {
-                                    status.textContent = '';
-                                }
-                                if (button) {
-                                    delete button.dataset.youtube4macRydVideoId;
-                                }
-                                return;
-                            }
-
-                            if (!videoId || typeof dislikes !== 'number') {
-                                badge.textContent = '';
-                                badge.style.display = 'none';
-                                if (status) {
-                                    status.textContent = statusText || 'RYD: no dislike data';
-                                }
-                                if (button) {
-                                    delete button.dataset.youtube4macRydVideoId;
-                                }
-                                return;
-                            }
-
-                            badge.textContent = `Dislikes: ${formatDislikes(dislikes)}`;
-                            badge.style.display = 'inline-flex';
-                            if (status) {
-                                status.textContent = statusText || 'RYD: loaded';
-                            }
-                            if (button) {
-                                button.setAttribute('aria-label', `Dislike ${formatDislikes(dislikes)}`);
-                                button.dataset.youtube4macRydVideoId = videoId;
-                            }
-                        };
-
-                        window.youtube4macApplyDislikes = applyDislikeCount;
-                        applyDislikeCount();
-
-                        if (!window.youtube4macDislikeObserver) {
-                            window.youtube4macDislikeObserver = new MutationObserver(() => {
-                                window.youtube4macApplyDislikes?.();
-                            });
-                            window.youtube4macDislikeObserver.observe(document.documentElement, {
-                                childList: true,
-                                subtree: true
-                            });
-                            window.addEventListener('yt-navigate-finish', () => {
-                                const button = findDislikeButton();
-                                if (button) {
-                                    delete button.dataset.youtube4macRydVideoId;
-                                }
-                                notifyNative();
-                            });
-                        }
-                    })();
-                    """,
-                injectionTime: .atDocumentEnd,
-                forMainFrameOnly: true
-            )
-        )
         configuration.userContentController = controller
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
@@ -647,7 +407,6 @@ struct WebView: NSViewRepresentable {
         )
         applyPreferences(
             isAdBlockEnabled: true,
-            isReturnYouTubeDislikeEnabled: isReturnYouTubeDislikeEnabled,
             isAppleTVMode: isAppleTVMode,
             to: webView
         )
@@ -658,7 +417,6 @@ struct WebView: NSViewRepresentable {
         context.coordinator.updateDeviceMode(isAppleTVMode, for: nsView)
         applyPreferences(
             isAdBlockEnabled: true,
-            isReturnYouTubeDislikeEnabled: isReturnYouTubeDislikeEnabled,
             isAppleTVMode: isAppleTVMode,
             to: nsView
         )
@@ -667,7 +425,6 @@ struct WebView: NSViewRepresentable {
 
     private func applyPreferences(
         isAdBlockEnabled: Bool,
-        isReturnYouTubeDislikeEnabled: Bool,
         isAppleTVMode: Bool,
         to webView: WKWebView
     ) {
@@ -675,10 +432,8 @@ struct WebView: NSViewRepresentable {
             """
             (() => {
                 window.youtube4macAdBlockEnabled = \(isAdBlockEnabled ? "true" : "false");
-                window.youtube4macReturnYouTubeDislikeEnabled = \(isReturnYouTubeDislikeEnabled ? "true" : "false");
                 window.youtube4macAppleTVMode = \(isAppleTVMode ? "true" : "false");
                 window.youtube4macApplyAdBlock?.();
-                window.youtube4macApplyDislikes?.();
                 window.youtube4macApplyTVLayout?.();
             })();
             """
@@ -691,7 +446,6 @@ struct WebView: NSViewRepresentable {
         private var isAdBlockEnabled = true
         private var isAppleTVMode = false
         private weak var webView: WKWebView?
-        private var lastFetchedVideoID: String?
 
         func installContentBlocker(
             into controller: WKUserContentController,
@@ -711,7 +465,6 @@ struct WebView: NSViewRepresentable {
         func updateDeviceMode(_ isAppleTVMode: Bool, for webView: WKWebView) {
             guard self.isAppleTVMode != isAppleTVMode else { return }
             self.isAppleTVMode = isAppleTVMode
-            lastFetchedVideoID = nil
             webView.customUserAgent = isAppleTVMode ? AppConfig.appleTVUserAgent : nil
             webView.load(URLRequest(url: AppConfig.homeURL(isAppleTVMode: isAppleTVMode)))
         }
@@ -773,56 +526,6 @@ struct WebView: NSViewRepresentable {
                     NSApplication.shared.terminate(nil)
                 }
                 return
-            }
-
-            guard message.name == AppConfig.returnYouTubeDislikeMessageHandler else { return }
-            guard
-                let body = message.body as? [String: Any],
-                let videoID = body["videoId"] as? String,
-                !videoID.isEmpty
-            else {
-                injectDislikeCount(nil, for: nil, status: "RYD: no video id")
-                return
-            }
-
-            guard lastFetchedVideoID != videoID else { return }
-            lastFetchedVideoID = videoID
-            fetchDislikeCount(for: videoID)
-        }
-
-        private func fetchDislikeCount(for videoID: String) {
-            var components = URLComponents(url: AppConfig.returnYouTubeDislikeAPI, resolvingAgainstBaseURL: false)
-            components?.queryItems = [URLQueryItem(name: "videoId", value: videoID)]
-            guard let url = components?.url else { return }
-
-            URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
-                guard let self else { return }
-                guard
-                    let data,
-                    let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                    let dislikes = payload["dislikes"] as? NSNumber
-                else {
-                    self.injectDislikeCount(nil, for: videoID, status: "RYD: API returned no dislike count")
-                    return
-                }
-
-                self.injectDislikeCount(dislikes.intValue, for: videoID, status: "RYD: loaded")
-            }.resume()
-        }
-
-        private func injectDislikeCount(_ dislikes: Int?, for videoID: String?, status: String) {
-            DispatchQueue.main.async { [weak self] in
-                guard let webView = self?.webView else { return }
-
-                let videoArgument = videoID.map { "'\($0.replacingOccurrences(of: "'", with: "\\'"))'" } ?? "null"
-                let dislikeArgument = dislikes.map(String.init) ?? "null"
-                let statusArgument = "'\(status.replacingOccurrences(of: "'", with: "\\'"))'"
-
-                webView.evaluateJavaScript(
-                    """
-                    window.youtube4macSetDislikeCount?.(\(videoArgument), \(dislikeArgument), \(statusArgument));
-                    """
-                )
             }
         }
 
@@ -1011,7 +714,6 @@ private struct CookieImportPanel: View {
 
 private struct FirstLaunchSplashView: View {
     @Binding var selectedTab: SettingsTab
-    @Binding var isReturnYouTubeDislikeEnabled: Bool
     @Binding var isAppleTVMode: Bool
     @Binding var cookieDomain: String
     @Binding var cookieText: String
@@ -1048,12 +750,6 @@ private struct FirstLaunchSplashView: View {
 
                     if selectedTab == .general {
                         VStack(spacing: 12) {
-                            SplashToggleRow(
-                                title: "Return YouTube Dislike",
-                                subtitle: "Fetch dislike counts from returnyoutubedislikeapi.com and show them next to the dislike button.",
-                                isOn: $isReturnYouTubeDislikeEnabled
-                            )
-
                             SplashToggleRow(
                                 title: "Report as Apple TV",
                                 subtitle: "Tell YouTube the device is an Apple TV so it loads the TV layout and metadata.",
@@ -1104,11 +800,9 @@ private struct FirstLaunchSplashView: View {
 }
 
 struct ContentView: View {
-    let appliedReturnYouTubeDislikeEnabled: Bool
     let appliedAppleTVMode: Bool
     let isShowingOnboarding: Bool
     let needsRestart: Bool
-    @Binding var draftReturnYouTubeDislikeEnabled: Bool
     @Binding var draftAppleTVMode: Bool
     @Binding var selectedSettingsTab: SettingsTab
     @Binding var cookieDomain: String
@@ -1122,7 +816,6 @@ struct ContentView: View {
     var body: some View {
         ZStack {
             WebView(
-                isReturnYouTubeDislikeEnabled: appliedReturnYouTubeDislikeEnabled,
                 isAppleTVMode: appliedAppleTVMode
             )
                 .ignoresSafeArea()
@@ -1132,7 +825,6 @@ struct ContentView: View {
             if isShowingOnboarding {
                 FirstLaunchSplashView(
                     selectedTab: $selectedSettingsTab,
-                    isReturnYouTubeDislikeEnabled: $draftReturnYouTubeDislikeEnabled,
                     isAppleTVMode: $draftAppleTVMode,
                     cookieDomain: $cookieDomain,
                     cookieText: $cookieText,
@@ -1208,13 +900,10 @@ private struct RestartRequiredView: View {
 
 @main
 struct YouTube4MacApp: App {
-    @AppStorage("isReturnYouTubeDislikeEnabled") private var isReturnYouTubeDislikeEnabled = true
     @AppStorage("isAppleTVMode") private var isAppleTVMode = false
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
 
-    @State private var appliedReturnYouTubeDislikeEnabled = true
     @State private var appliedAppleTVMode = false
-    @State private var draftReturnYouTubeDislikeEnabled = true
     @State private var draftAppleTVMode = false
     @State private var isShowingSettings = false
     @State private var needsRestart = false
@@ -1225,12 +914,9 @@ struct YouTube4MacApp: App {
 
     init() {
         let defaults = UserDefaults.standard
-        let savedReturnYouTubeDislikeEnabled = defaults.object(forKey: "isReturnYouTubeDislikeEnabled") as? Bool ?? true
         let savedAppleTVMode = defaults.object(forKey: "isAppleTVMode") as? Bool ?? false
 
-        _appliedReturnYouTubeDislikeEnabled = State(initialValue: savedReturnYouTubeDislikeEnabled)
         _appliedAppleTVMode = State(initialValue: savedAppleTVMode)
-        _draftReturnYouTubeDislikeEnabled = State(initialValue: savedReturnYouTubeDislikeEnabled)
         _draftAppleTVMode = State(initialValue: savedAppleTVMode)
         AppIconLoader.apply()
     }
@@ -1238,11 +924,9 @@ struct YouTube4MacApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(
-                appliedReturnYouTubeDislikeEnabled: appliedReturnYouTubeDislikeEnabled,
                 appliedAppleTVMode: appliedAppleTVMode,
                 isShowingOnboarding: !hasCompletedOnboarding || isShowingSettings,
                 needsRestart: needsRestart,
-                draftReturnYouTubeDislikeEnabled: $draftReturnYouTubeDislikeEnabled,
                 draftAppleTVMode: $draftAppleTVMode,
                 selectedSettingsTab: $selectedSettingsTab,
                 cookieDomain: $cookieDomain,
@@ -1274,12 +958,10 @@ struct YouTube4MacApp: App {
     }
 
     private func syncAppliedState() {
-        appliedReturnYouTubeDislikeEnabled = isReturnYouTubeDislikeEnabled
         appliedAppleTVMode = isAppleTVMode
     }
 
     private func syncDraftState() {
-        draftReturnYouTubeDislikeEnabled = isReturnYouTubeDislikeEnabled
         draftAppleTVMode = isAppleTVMode
     }
 
@@ -1296,10 +978,7 @@ struct YouTube4MacApp: App {
     }
 
     private func completeOnboarding() {
-        let didChange =
-            draftReturnYouTubeDislikeEnabled != isReturnYouTubeDislikeEnabled
-            || draftAppleTVMode != isAppleTVMode
-        isReturnYouTubeDislikeEnabled = draftReturnYouTubeDislikeEnabled
+        let didChange = draftAppleTVMode != isAppleTVMode
         isAppleTVMode = draftAppleTVMode
         hasCompletedOnboarding = true
         isShowingSettings = false
