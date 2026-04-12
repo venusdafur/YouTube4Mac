@@ -324,6 +324,9 @@ struct WebView: NSViewRepresentable {
                             'ytd-display-ad-renderer',
                             'ytd-ad-slot-renderer',
                             'ytd-player-legacy-desktop-watch-ads-renderer',
+                            'ytd-engagement-panel-section-list-renderer[target-id*="engagement-panel-ads"]',
+                            'ytd-banner-promo-renderer',
+                            'ytd-statement-banner-renderer',
                             'ytd-reel-video-renderer ytd-ad-slot-renderer',
                             'ytd-video-masthead-ad-v3-renderer',
                             'ytd-in-feed-ad-layout-renderer',
@@ -335,9 +338,24 @@ struct WebView: NSViewRepresentable {
                             '.ytp-ad-overlay-container',
                             '.ytp-ad-message-container',
                             '.ytp-ad-image-overlay',
+                            '.ytp-featured-product',
+                            '.ytp-suggested-action-badge',
+                            '.video-ads',
                             '.ytd-in-feed-ad-layout-renderer',
                             '[layout*="display-ad-renderer"]',
                             '[class*="ytd-display-ad-renderer"]'
+                        ];
+
+                        const sponsoredContainerSelectors = [
+                            'ytd-rich-item-renderer',
+                            'ytd-video-renderer',
+                            'ytd-compact-video-renderer',
+                            'ytd-grid-video-renderer',
+                            'ytlr-rich-grid-row > *',
+                            'ytlr-rich-grid-renderer > *',
+                            'ytlr-item-section-renderer > *',
+                            'ytlr-section-list-renderer > *',
+                            'ytlr-guide-response-container > *'
                         ];
 
                         const ensureStyle = () => {
@@ -360,6 +378,15 @@ struct WebView: NSViewRepresentable {
                                 document.querySelectorAll(selector).forEach((node) => node.remove());
                             });
 
+                            document.querySelectorAll('[class*="ad-"], [id*="ad-"], [id^="ad_"]').forEach((node) => {
+                                if (
+                                    node instanceof HTMLElement &&
+                                    /banner|masthead|companion|promoted|sponsor/i.test(node.className + ' ' + node.id)
+                                ) {
+                                    node.remove();
+                                }
+                            });
+
                             document.querySelectorAll('ytd-rich-item-renderer, ytd-compact-video-renderer, ytd-video-renderer').forEach((node) => {
                                 if (
                                     node.querySelector('ytd-display-ad-renderer, ytd-ad-slot-renderer, [badge-style-type=\"BADGE_STYLE_TYPE_AD\"]') ||
@@ -369,12 +396,29 @@ struct WebView: NSViewRepresentable {
                                 }
                             });
 
+                            document.querySelectorAll(sponsoredContainerSelectors.join(',')).forEach((node) => {
+                                const text = (node.textContent || '').replace(/\\s+/g, ' ').trim();
+                                if (
+                                    /(^|\\s)sponsored(\\s|$)/i.test(text) ||
+                                    /press and hold for ad options/i.test(text) ||
+                                    /promoted/i.test(text)
+                                ) {
+                                    node.remove();
+                                }
+                            });
+
                             document.querySelector('.ytp-ad-skip-button, .ytp-skip-ad-button, .ytp-ad-skip-button-modern')?.click();
+                            document.querySelector('.ytp-ad-overlay-close-button')?.click();
 
                             const video = document.querySelector('video');
                             if (video && document.querySelector('.ad-showing')) {
                                 const duration = Number.isFinite(video.duration) ? video.duration : 0;
                                 video.currentTime = duration > 0 ? duration : 9999;
+                            }
+
+                            if (document.querySelector('.ad-showing')) {
+                                document.documentElement.classList.remove('ad-showing');
+                                document.body?.classList?.remove('ad-showing');
                             }
                         };
 
@@ -383,6 +427,7 @@ struct WebView: NSViewRepresentable {
                         };
 
                         hideAds();
+                        setInterval(hideAds, 1200);
                         new MutationObserver(hideAds).observe(document.documentElement, {
                             childList: true,
                             subtree: true
@@ -549,7 +594,23 @@ struct WebView: NSViewRepresentable {
               },
               {
                 "trigger": {
+                  "url-filter": "https?://([A-Za-z0-9.-]+\\\\.)?youtube\\\\.com/pagead/.*"
+                },
+                "action": {
+                  "type": "block"
+                }
+              },
+              {
+                "trigger": {
                   "url-filter": "https?://([A-Za-z0-9.-]+\\\\.)?youtubei\\\\.googleapis\\\\.com/.*ad.*"
+                },
+                "action": {
+                  "type": "block"
+                }
+              },
+              {
+                "trigger": {
+                  "url-filter": "https?://([A-Za-z0-9.-]+\\\\.)?youtubei\\\\.googleapis\\\\.com/youtubei/v1/log_event.*"
                 },
                 "action": {
                   "type": "block"
@@ -562,7 +623,7 @@ struct WebView: NSViewRepresentable {
                 },
                 "action": {
                   "type": "css-display-none",
-                  "selector": "ytd-display-ad-renderer, ytd-ad-slot-renderer, ytd-video-masthead-ad-v3-renderer, ytd-in-feed-ad-layout-renderer, ytm-promoted-sparkles-web-renderer, .ytd-promoted-sparkles-web-renderer, .ytp-ad-overlay-container, .ytp-ad-message-container"
+                  "selector": "ytd-display-ad-renderer, ytd-ad-slot-renderer, ytd-video-masthead-ad-v3-renderer, ytd-in-feed-ad-layout-renderer, ytm-promoted-sparkles-web-renderer, .ytd-promoted-sparkles-web-renderer, .ytp-ad-overlay-container, .ytp-ad-message-container, .ytp-ad-image-overlay, .ytp-ad-module, .video-ads, ytd-banner-promo-renderer"
                 }
               }
             ]
