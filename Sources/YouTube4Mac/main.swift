@@ -9,6 +9,7 @@ private enum AppConfig {
     static let githubURL = URL(string: "https://github.com/realcatdev/YouTube4Mac")!
     static let returnYouTubeDislikeAPI = URL(string: "https://returnyoutubedislikeapi.com/votes")!
     static let returnYouTubeDislikeMessageHandler = "youtube4macVideoChanged"
+    static let closeAppMessageHandler = "youtube4macCloseApp"
     static let appleTVUserAgent = "Roku/DVP-9.10 (519.10E04111A)"
 
     static func homeURL(isAppleTVMode: Bool) -> URL {
@@ -199,10 +200,130 @@ struct WebView: NSViewRepresentable {
 
         let controller = WKUserContentController()
         controller.add(context.coordinator, name: AppConfig.returnYouTubeDislikeMessageHandler)
+        controller.add(context.coordinator, name: AppConfig.closeAppMessageHandler)
         controller.addUserScript(
             WKUserScript(
                 source: """
                     (() => {
+                        const pickTVScaleTarget = () => {
+                            const candidates = [
+                                document.querySelector('ytlr-guide-response-container'),
+                                document.querySelector('ytlr-browse-response'),
+                                document.querySelector('ytlr-home-content-renderer'),
+                                document.querySelector('ytlr-section-list-renderer'),
+                                document.querySelector('ytlr-rich-grid-renderer'),
+                                document.querySelector('ytlr-app')
+                            ].filter(Boolean);
+
+                            if (!candidates.length) return null;
+
+                            return candidates.reduce((widest, current) => {
+                                return current.getBoundingClientRect().width > widest.getBoundingClientRect().width ? current : widest;
+                            });
+                        };
+
+                        const applyTVLayout = () => {
+                            const enabled = !!window.youtube4macAppleTVMode;
+                            const scaleTarget = pickTVScaleTarget();
+
+                            let style = document.getElementById('youtube4mac-tv-layout-style');
+                            if (!style) {
+                                style = document.createElement('style');
+                                style.id = 'youtube4mac-tv-layout-style';
+                                document.documentElement.appendChild(style);
+                            }
+
+                            style.textContent = enabled ? `
+                                html, body {
+                                    width: 100vw !important;
+                                    max-width: 100vw !important;
+                                    margin-left: 0 !important;
+                                    margin-right: 0 !important;
+                                    overflow-x: hidden !important;
+                                }
+
+                                ytlr-app,
+                                ytlr-guide-response-container,
+                                ytlr-browse-response,
+                                ytlr-home-content-renderer,
+                                ytlr-section-list-renderer,
+                                ytlr-rich-grid-renderer,
+                                ytlr-rich-grid-row,
+                                ytlr-watch-grid,
+                                #container,
+                                #content,
+                                #contents,
+                                #page-manager {
+                                    width: 100vw !important;
+                                    max-width: 100vw !important;
+                                    margin-left: 0 !important;
+                                    margin-right: 0 !important;
+                                    padding-left: 0 !important;
+                                    padding-right: 0 !important;
+                                    left: 0 !important;
+                                    right: 0 !important;
+                                }
+                            ` : '';
+
+                            document.querySelectorAll('[data-youtube4mac-tv-scaled="true"]').forEach((node) => {
+                                node.style.transform = '';
+                                node.style.transformOrigin = '';
+                                node.style.width = '';
+                                node.style.maxWidth = '';
+                                node.style.marginLeft = '';
+                                node.style.marginRight = '';
+                                node.removeAttribute('data-youtube4mac-tv-scaled');
+                            });
+
+                            if (!enabled || !scaleTarget) {
+                                return;
+                            }
+
+                            const rect = scaleTarget.getBoundingClientRect();
+                            if (!rect.width || !Number.isFinite(rect.width)) {
+                                return;
+                            }
+
+                            const availableWidth = window.innerWidth;
+                            const horizontalScale = Math.max(1, availableWidth / rect.width);
+
+                            if (horizontalScale <= 1.01) {
+                                return;
+                            }
+
+                            scaleTarget.setAttribute('data-youtube4mac-tv-scaled', 'true');
+                            scaleTarget.style.transformOrigin = 'top left';
+                            scaleTarget.style.transform = `scaleX(${horizontalScale})`;
+                            scaleTarget.style.width = `${availableWidth / horizontalScale}px`;
+                            scaleTarget.style.maxWidth = `${availableWidth / horizontalScale}px`;
+                            scaleTarget.style.marginLeft = '0';
+                            scaleTarget.style.marginRight = '0';
+                        };
+
+                        window.youtube4macApplyTVLayout = applyTVLayout;
+                        applyTVLayout();
+                        window.addEventListener('resize', applyTVLayout);
+                        new MutationObserver(applyTVLayout).observe(document.documentElement, {
+                            childList: true,
+                            subtree: true
+                        });
+                    })();
+                    """,
+                injectionTime: .atDocumentEnd,
+                forMainFrameOnly: true
+            )
+        )
+        controller.addUserScript(
+            WKUserScript(
+                source: """
+                    (() => {
+                        const closeApp = () => {
+                            window.webkit?.messageHandlers?.\(AppConfig.closeAppMessageHandler)?.postMessage({});
+                        };
+
+                        window.close = closeApp;
+                        window.youtube4macCloseApp = closeApp;
+
                         const selectors = [
                             'ytd-display-ad-renderer',
                             'ytd-ad-slot-renderer',
@@ -517,7 +638,6 @@ struct WebView: NSViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.allowsBackForwardNavigationGestures = true
         webView.navigationDelegate = context.coordinator
-        webView.setValue(false, forKey: "drawsBackground")
         webView.customUserAgent = isAppleTVMode ? AppConfig.appleTVUserAgent : nil
         context.coordinator.installContentBlocker(
             into: controller,
@@ -528,6 +648,7 @@ struct WebView: NSViewRepresentable {
         applyPreferences(
             isAdBlockEnabled: isAdBlockEnabled,
             isReturnYouTubeDislikeEnabled: isReturnYouTubeDislikeEnabled,
+            isAppleTVMode: isAppleTVMode,
             to: webView
         )
         return webView
@@ -539,6 +660,7 @@ struct WebView: NSViewRepresentable {
         applyPreferences(
             isAdBlockEnabled: isAdBlockEnabled,
             isReturnYouTubeDislikeEnabled: isReturnYouTubeDislikeEnabled,
+            isAppleTVMode: isAppleTVMode,
             to: nsView
         )
         context.coordinator.loadIfNeeded(nsView)
@@ -547,6 +669,7 @@ struct WebView: NSViewRepresentable {
     private func applyPreferences(
         isAdBlockEnabled: Bool,
         isReturnYouTubeDislikeEnabled: Bool,
+        isAppleTVMode: Bool,
         to webView: WKWebView
     ) {
         webView.evaluateJavaScript(
@@ -554,8 +677,10 @@ struct WebView: NSViewRepresentable {
             (() => {
                 window.youtube4macAdBlockEnabled = \(isAdBlockEnabled ? "true" : "false");
                 window.youtube4macReturnYouTubeDislikeEnabled = \(isReturnYouTubeDislikeEnabled ? "true" : "false");
+                window.youtube4macAppleTVMode = \(isAppleTVMode ? "true" : "false");
                 window.youtube4macApplyAdBlock?.();
                 window.youtube4macApplyDislikes?.();
+                window.youtube4macApplyTVLayout?.();
             })();
             """
         )
@@ -659,6 +784,13 @@ struct WebView: NSViewRepresentable {
             decisionHandler(.allow)
         }
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            if message.name == AppConfig.closeAppMessageHandler {
+                DispatchQueue.main.async {
+                    NSApplication.shared.terminate(nil)
+                }
+                return
+            }
+
             guard message.name == AppConfig.returnYouTubeDislikeMessageHandler else { return }
             guard
                 let body = message.body as? [String: Any],
@@ -1162,8 +1294,8 @@ struct YouTube4MacApp: App {
                 syncDraftState()
             }
         }
-        .windowResizability(.contentSize)
-        .defaultSize(width: 1280, height: 820)
+        .windowResizability(.automatic)
+        .defaultSize(width: 1440, height: 900)
         .commands {
             CommandMenu("Settings") {
                 Button("Open Settings") {
