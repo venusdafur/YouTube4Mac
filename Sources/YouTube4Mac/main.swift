@@ -8,6 +8,7 @@ private enum AppConfig {
     static let adBlockerIdentifier = "YouTube4MacAdBlock"
     static let githubURL = URL(string: "https://github.com/realcatdev/YouTube4Mac")!
     static let closeAppMessageHandler = "youtube4macCloseApp"
+    static let debugMessageHandler = "youtube4macDebug"
     static let appleTVUserAgent = "Roku/DVP-9.10 (519.10E04111A)"
 
     static func homeURL(isAppleTVMode: Bool) -> URL {
@@ -25,6 +26,32 @@ private enum AppIconLoader {
         }
 
         NSApplication.shared.applicationIconImage = iconImage
+    }
+}
+
+private enum DebugLogger {
+    static let logURLs = [
+        URL(fileURLWithPath: "/Users/sonnet/Documents/Codex/YouTube4Mac/ad-debug.log"),
+        URL(fileURLWithPath: "/tmp/YouTube4Mac-ad-debug.log")
+    ]
+
+    static func append(_ message: String) {
+        let line = "[\(ISO8601DateFormatter().string(from: Date()))] \(message)\n"
+        let data = Data(line.utf8)
+        for logURL in logURLs {
+            let directory = logURL.deletingLastPathComponent()
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+            if !FileManager.default.fileExists(atPath: logURL.path) {
+                FileManager.default.createFile(atPath: logURL.path, contents: data)
+                continue
+            }
+
+            guard let handle = try? FileHandle(forWritingTo: logURL) else { continue }
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        }
     }
 }
 
@@ -196,6 +223,7 @@ struct WebView: NSViewRepresentable {
 
         let controller = WKUserContentController()
         controller.add(context.coordinator, name: AppConfig.closeAppMessageHandler)
+        controller.add(context.coordinator, name: AppConfig.debugMessageHandler)
         controller.addUserScript(
             WKUserScript(
                 source: """
@@ -355,7 +383,13 @@ struct WebView: NSViewRepresentable {
                         ];
 
                         const sponsoredContainerSelectors = [
+                            'ytd-rich-grid-media',
                             'ytd-rich-item-renderer',
+                            'ytd-rich-grid-renderer #contents > *',
+                            'ytd-rich-shelf-renderer',
+                            'ytd-shelf-renderer',
+                            'ytd-horizontal-card-list-renderer > *',
+                            'ytd-compact-promoted-video-renderer',
                             'ytd-video-renderer',
                             'ytd-compact-video-renderer',
                             'ytd-grid-video-renderer',
@@ -365,6 +399,132 @@ struct WebView: NSViewRepresentable {
                             'ytlr-section-list-renderer > *',
                             'ytlr-guide-response-container > *'
                         ];
+
+                        const homepageAdTextPatterns = [
+                            /(^|\\s)sponsored(\\s|$)/i,
+                            /press and hold for ad options/i,
+                            /advertiser survey/i,
+                            /why this ad/i,
+                            /ad choices/i,
+                            /visit advertiser/i,
+                            /promoted/i,
+                            /free with ads/i,
+                            /shop now/i,
+                            /install now/i,
+                            /learn more/i
+                        ];
+
+                        const isHomepageLike = () => {
+                            const path = window.location.pathname || '/';
+                            return path === '/' || path.startsWith('/feed/') || path.startsWith('/@');
+                        };
+
+                        const homepageContainerTagNames = new Set([
+                            'YTD-RICH-ITEM-RENDERER',
+                            'YTD-RICH-GRID-MEDIA',
+                            'YTD-VIDEO-RENDERER',
+                            'YTD-COMPACT-VIDEO-RENDERER',
+                            'YTD-GRID-VIDEO-RENDERER',
+                            'YTD-RICH-SECTION-RENDERER',
+                            'YTD-RICH-SHELF-RENDERER',
+                            'YTD-SHELF-RENDERER',
+                            'YTD-HORIZONTAL-CARD-LIST-RENDERER',
+                            'YTD-REEL-SHELF-RENDERER',
+                            'YTD-ITEM-SECTION-RENDERER',
+                            'YTD-STATEMENT-BANNER-RENDERER',
+                            'YTD-BANNER-PROMO-RENDERER',
+                            'YTLR-RICH-GRID-ROW',
+                            'YTLR-RICH-GRID-RENDERER',
+                            'YTLR-ITEM-SECTION-RENDERER',
+                            'YTLR-SECTION-LIST-RENDERER',
+                            'YTLR-GUIDE-RESPONSE-CONTAINER',
+                            'YTLR-HOME-CONTENT-RENDERER',
+                            'YTLR-BROWSE-RESPONSE',
+                            'YTLR-CONTENT-ITEM-RENDERER',
+                            'YTLR-RICH-ITEM-RENDERER',
+                            'YTLR-TILE-RENDERER'
+                        ]);
+
+                        const closestHomepageContainer = (node) => {
+                            let current = node instanceof Element ? node : null;
+
+                            while (current) {
+                                if (homepageContainerTagNames.has(current.tagName)) {
+                                    return current;
+                                }
+
+                                if (
+                                    current instanceof HTMLElement &&
+                                    current.parentElement &&
+                                    current.parentElement.id === 'contents'
+                                ) {
+                                    return current;
+                                }
+
+                                current = current.parentElement;
+                            }
+
+                            return null;
+                        };
+
+                        const removeHomepageContainer = (node) => {
+                            const container = closestHomepageContainer(node);
+                            if (container) {
+                                container.remove();
+                                return;
+                            }
+
+                            if (node instanceof HTMLElement) {
+                                node.remove();
+                            }
+                        };
+
+                        const debugDescribeNode = (node) => {
+                            if (!(node instanceof Element)) return null;
+
+                            const describe = (element) => {
+                                const tag = element.tagName.toLowerCase();
+                                const id = element.id ? `#${element.id}` : '';
+                                const classes = Array.from(element.classList || []).slice(0, 4).map((name) => `.${name}`).join('');
+                                const text = (element.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 180);
+                                return { tag, id, classes, text };
+                            };
+
+                            const chain = [];
+                            let current = node;
+                            let depth = 0;
+                            while (current && current instanceof Element && depth < 10) {
+                                chain.push(describe(current));
+                                current = current.parentElement;
+                                depth += 1;
+                            }
+
+                            return {
+                                location: window.location.href,
+                                marker: (node.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 180),
+                                nearestContainer: closestHomepageContainer(node)?.tagName?.toLowerCase() || null,
+                                chain
+                            };
+                        };
+
+                        const sendDebug = (payload) => {
+                            window.webkit?.messageHandlers?.\(AppConfig.debugMessageHandler)?.postMessage(payload);
+                        };
+
+                        const sentDebugKeys = new Set();
+                        const sendDebugOnce = (payload) => {
+                            if (!payload) return;
+                            const key = JSON.stringify(payload);
+                            if (sentDebugKeys.has(key)) return;
+                            sentDebugKeys.add(key);
+                            sendDebug(payload);
+                        };
+
+                        sendDebug({
+                            event: 'debug-ready',
+                            location: window.location.href,
+                            title: document.title
+                        });
 
                         const ensureStyle = () => {
                             let style = document.getElementById('youtube4mac-adblock-style');
@@ -421,6 +581,21 @@ struct WebView: NSViewRepresentable {
                             ensureStyle();
                             if (!window.youtube4macAdBlockEnabled) return;
 
+                            if (isHomepageLike()) {
+                                document.querySelectorAll('yt-formatted-string, span, div, a, button').forEach((node) => {
+                                    if (!(node instanceof HTMLElement)) return;
+                                    const text = (node.innerText || '').replace(/\\s+/g, ' ').trim();
+                                    if (!text) return;
+
+                                    if (homepageAdTextPatterns.some((pattern) => pattern.test(text))) {
+                                        sendDebugOnce({
+                                            event: 'homepage-marker-match',
+                                            ...debugDescribeNode(node)
+                                        });
+                                    }
+                                });
+                            }
+
                             selectors.forEach((selector) => {
                                 document.querySelectorAll(selector).forEach((node) => node.remove());
                             });
@@ -435,27 +610,78 @@ struct WebView: NSViewRepresentable {
                             });
 
                             document.querySelectorAll('ytd-rich-item-renderer, ytd-compact-video-renderer, ytd-video-renderer').forEach((node) => {
+                                const text = (node.textContent || '').replace(/\\s+/g, ' ').trim();
                                 if (
                                     node.querySelector('ytd-display-ad-renderer, ytd-ad-slot-renderer, [badge-style-type=\"BADGE_STYLE_TYPE_AD\"]') ||
-                                    /(^|\\s)sponsored(\\s|$)/i.test(node.textContent || '') ||
-                                    /promoted/i.test(node.textContent || '') ||
-                                    /free with ads/i.test(node.textContent || '')
+                                    homepageAdTextPatterns.some((pattern) => pattern.test(text)) ||
+                                    node.querySelector('[aria-label*="Sponsored"], [aria-label*="Promoted"], [title*="Sponsored"], [title*="Promoted"]')
                                 ) {
                                     node.remove();
                                 }
                             });
 
-                            document.querySelectorAll(sponsoredContainerSelectors.join(',')).forEach((node) => {
+                            if (isHomepageLike()) {
+                                document.querySelectorAll('yt-formatted-string, span, div, a, button').forEach((node) => {
+                                    if (!(node instanceof HTMLElement)) return;
+                                    const text = (node.innerText || '').replace(/\\s+/g, ' ').trim();
+                                    if (text && homepageAdTextPatterns.some((pattern) => pattern.test(text))) {
+                                        sendDebugOnce({
+                                            event: 'homepage-remove-text-node',
+                                            ...debugDescribeNode(node)
+                                        });
+                                        removeHomepageContainer(node);
+                                    }
+                                });
+
+                                document.querySelectorAll(sponsoredContainerSelectors.join(',')).forEach((node) => {
+                                    const text = (node.textContent || '').replace(/\\s+/g, ' ').trim();
+                                    if (
+                                        homepageAdTextPatterns.some((pattern) => pattern.test(text)) ||
+                                        node.querySelector('ytd-display-ad-renderer, ytd-ad-slot-renderer, ytd-promoted-video-renderer, ytd-promoted-sparkles-text-search-renderer') ||
+                                        node.querySelector('[aria-label*="Sponsored"], [aria-label*="Promoted"], [title*="Sponsored"], [title*="Promoted"]')
+                                    ) {
+                                        sendDebugOnce({
+                                            event: 'homepage-remove-container',
+                                            ...debugDescribeNode(node)
+                                        });
+                                        removeHomepageContainer(node);
+                                    }
+                                });
+                            }
+
+                            document.querySelectorAll('ytd-rich-section-renderer, ytd-statement-banner-renderer, ytd-banner-promo-renderer').forEach((node) => {
                                 const text = (node.textContent || '').replace(/\\s+/g, ' ').trim();
                                 if (
-                                    /(^|\\s)sponsored(\\s|$)/i.test(text) ||
-                                    /press and hold for ad options/i.test(text) ||
-                                    /promoted/i.test(text) ||
-                                    /free with ads/i.test(text)
+                                    homepageAdTextPatterns.some((pattern) => pattern.test(text)) ||
+                                    /try|offer|deal/i.test(text)
                                 ) {
                                     node.remove();
                                 }
                             });
+
+                            if (isHomepageLike()) {
+                                document.querySelectorAll('[aria-label*="Sponsored"], [aria-label*="Promoted"], [title*="Sponsored"], [title*="Promoted"]').forEach((node) => {
+                                    sendDebugOnce({
+                                        event: 'homepage-remove-aria',
+                                        ...debugDescribeNode(node)
+                                    });
+                                    removeHomepageContainer(node);
+                                });
+
+                                document.querySelectorAll('*').forEach((node) => {
+                                    if (!(node instanceof HTMLElement)) return;
+                                    if (node.children.length > 12) return;
+
+                                    const text = (node.innerText || '').replace(/\\s+/g, ' ').trim();
+                                    if (homepageAdTextPatterns.some((pattern) => pattern.test(text))) {
+                                        sendDebugOnce({
+                                            event: 'homepage-remove-generic',
+                                            ...debugDescribeNode(node)
+                                        });
+                                        removeHomepageContainer(node);
+                                    }
+                                });
+                            }
 
                             skipActiveVideoAd();
                         };
@@ -608,6 +834,11 @@ struct WebView: NSViewRepresentable {
                 DispatchQueue.main.async {
                     NSApplication.shared.terminate(nil)
                 }
+                return
+            }
+
+            if message.name == AppConfig.debugMessageHandler {
+                DebugLogger.append(String(describing: message.body))
                 return
             }
         }
