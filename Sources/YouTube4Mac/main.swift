@@ -280,22 +280,23 @@ struct WebView: NSViewRepresentable {
                             }
 
                             const rect = scaleTarget.getBoundingClientRect();
-                            if (!rect.width || !Number.isFinite(rect.width)) {
+                            if (!rect.width || !rect.height || !Number.isFinite(rect.width) || !Number.isFinite(rect.height)) {
                                 return;
                             }
 
                             const availableWidth = window.innerWidth;
-                            const horizontalScale = Math.max(1, availableWidth / rect.width);
+                            const availableHeight = window.innerHeight;
+                            const fittedScale = Math.max(1, Math.min(availableWidth / rect.width, availableHeight / rect.height));
 
-                            if (horizontalScale <= 1.01) {
+                            if (fittedScale <= 1.01) {
                                 return;
                             }
 
                             scaleTarget.setAttribute('data-youtube4mac-tv-scaled', 'true');
                             scaleTarget.style.transformOrigin = 'top left';
-                            scaleTarget.style.transform = `scaleX(${horizontalScale})`;
-                            scaleTarget.style.width = `${availableWidth / horizontalScale}px`;
-                            scaleTarget.style.maxWidth = `${availableWidth / horizontalScale}px`;
+                            scaleTarget.style.transform = `scale(${fittedScale})`;
+                            scaleTarget.style.width = `${availableWidth / fittedScale}px`;
+                            scaleTarget.style.maxWidth = `${availableWidth / fittedScale}px`;
                             scaleTarget.style.marginLeft = '0';
                             scaleTarget.style.marginRight = '0';
                         };
