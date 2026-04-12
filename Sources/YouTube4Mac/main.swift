@@ -186,10 +186,9 @@ struct WebView: NSViewRepresentable {
     let isAdBlockEnabled: Bool
     let isReturnYouTubeDislikeEnabled: Bool
     let isAppleTVMode: Bool
-    let navigationState: NavigationState
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(navigationState: navigationState)
+        Coordinator()
     }
 
     func makeNSView(context: Context) -> WKWebView {
@@ -569,12 +568,7 @@ struct WebView: NSViewRepresentable {
         private var isAppleTVMode = false
         private weak var webView: WKWebView?
         private var lastFetchedVideoID: String?
-        private let navigationState: NavigationState
 
-        init(navigationState: NavigationState) {
-            self.navigationState = navigationState
-            super.init()
-        }
         func installContentBlocker(
             into controller: WKUserContentController,
             for webView: WKWebView,
@@ -584,7 +578,6 @@ struct WebView: NSViewRepresentable {
             isAdBlockEnabled = isEnabled
             self.isAppleTVMode = isAppleTVMode
             self.webView = webView
-            navigationState.update(with: webView)
             configureContentBlocker(in: controller) { [weak self] in
                 self?.didInstallBlocker = true
                 self?.loadIfNeeded(webView)
@@ -597,7 +590,6 @@ struct WebView: NSViewRepresentable {
             lastFetchedVideoID = nil
             webView.customUserAgent = isAppleTVMode ? AppConfig.appleTVUserAgent : nil
             webView.load(URLRequest(url: AppConfig.homeURL(isAppleTVMode: isAppleTVMode)))
-            navigationState.update(with: webView)
         }
 
         func updateAdBlockState(_ isEnabled: Bool, for webView: WKWebView) {
@@ -613,7 +605,6 @@ struct WebView: NSViewRepresentable {
                 self?.didInstallBlocker = true
                 webView.reload()
             }
-            navigationState.update(with: webView)
         }
 
         private func configureContentBlocker(in controller: WKUserContentController, completion: @escaping () -> Void) {
@@ -667,11 +658,6 @@ struct WebView: NSViewRepresentable {
 
             decisionHandler(.allow)
         }
-
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            navigationState.refresh()
-        }
-
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             guard message.name == AppConfig.returnYouTubeDislikeMessageHandler else { return }
             guard
@@ -845,61 +831,6 @@ private struct SettingsSecondaryButtonStyle: ButtonStyle {
             .shadow(color: .black.opacity(configuration.isPressed ? 0.08 : 0.16), radius: configuration.isPressed ? 6 : 12, y: configuration.isPressed ? 3 : 8)
             .scaleEffect(configuration.isPressed ? 0.985 : 1)
             .animation(.easeOut(duration: 0.14), value: configuration.isPressed)
-    }
-}
-
-final class NavigationState: ObservableObject {
-    @Published private(set) var canGoBack = false
-    @Published private(set) var canGoForward = false
-
-    private weak var webView: WKWebView?
-
-    func update(with webView: WKWebView?) {
-        self.webView = webView
-        refresh()
-    }
-
-    func refresh() {
-        canGoBack = webView != nil
-        canGoForward = webView != nil
-    }
-
-    func goBack() {
-        guard let webView else { return }
-        if webView.canGoBack {
-            webView.goBack()
-        } else {
-            webView.evaluateJavaScript("history.back();")
-        }
-    }
-
-    func goForward() {
-        guard let webView else { return }
-        if webView.canGoForward {
-            webView.goForward()
-        } else {
-            webView.evaluateJavaScript("history.forward();")
-        }
-    }
-}
-
-private struct NavigationControlButton: View {
-    let systemImage: String
-    let title: String
-    let action: () -> Void
-    let isEnabled: Bool
-
-    var body: some View {
-        Button(action: action) {
-            Label(title, systemImage: systemImage)
-                .font(.system(size: 13, weight: .semibold))
-                .frame(minWidth: 110)
-                .padding(.vertical, 8)
-                .padding(.horizontal, 12)
-        }
-        .buttonStyle(SettingsSecondaryButtonStyle())
-        .disabled(!isEnabled)
-        .opacity(isEnabled ? 1 : 0.45)
     }
 }
 
@@ -1080,15 +1011,13 @@ struct ContentView: View {
     let completeOnboarding: () -> Void
     let dismissRestartPrompt: () -> Void
     let quitApp: () -> Void
-    @ObservedObject var navigationState: NavigationState
 
     var body: some View {
         ZStack {
             WebView(
                 isAdBlockEnabled: appliedAdBlockEnabled,
                 isReturnYouTubeDislikeEnabled: appliedReturnYouTubeDislikeEnabled,
-                isAppleTVMode: appliedAppleTVMode,
-                navigationState: navigationState
+                isAppleTVMode: appliedAppleTVMode
             )
                 .ignoresSafeArea()
                 .blur(radius: (isShowingOnboarding || needsRestart) ? 18 : 0)
@@ -1115,32 +1044,6 @@ struct ContentView: View {
                     quitAction: quitApp
                 )
                 .transition(.opacity.combined(with: .scale(scale: 0.96)))
-            }
-
-            if !isShowingOnboarding && !needsRestart {
-                VStack {
-                    Spacer()
-                    HStack(spacing: 10) {
-                        NavigationControlButton(
-                            systemImage: "chevron.left",
-                            title: "Back",
-                            action: navigationState.goBack,
-                            isEnabled: navigationState.canGoBack
-                        )
-
-                        NavigationControlButton(
-                            systemImage: "chevron.right",
-                            title: "Forward",
-                            action: navigationState.goForward,
-                            isEnabled: navigationState.canGoForward
-                        )
-
-                        Spacer()
-                    }
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 20)
-                    .frame(maxWidth: .infinity)
-                }
             }
         }
         .animation(.easeInOut(duration: 0.2), value: isShowingOnboarding || needsRestart)
@@ -1217,7 +1120,6 @@ struct YouTube4MacApp: App {
     @State private var cookieDomain = ".youtube.com"
     @State private var cookieText = ""
     @State private var cookieImportStatus: String?
-    @StateObject private var navigationState = NavigationState()
 
     init() {
         let defaults = UserDefaults.standard
@@ -1252,8 +1154,7 @@ struct YouTube4MacApp: App {
                 importCookies: importCookies,
                 completeOnboarding: completeOnboarding,
                 dismissRestartPrompt: { needsRestart = false },
-                quitApp: { NSApplication.shared.terminate(nil) },
-                navigationState: navigationState
+                quitApp: { NSApplication.shared.terminate(nil) }
             )
             .frame(minWidth: 980, minHeight: 680)
             .onAppear {
