@@ -44,7 +44,66 @@ build_iconset() {
     local padded_icon="$RESOURCES_DIR/AppIcon.png"
 
     extract_icon_png
-    sips -z 1024 1024 "$icon_source" --out "$padded_icon" >/dev/null
+    ICON_INPUT="$icon_source" ICON_OUTPUT="$padded_icon" swift - <<'SWIFT'
+import AppKit
+import Foundation
+
+let environment = ProcessInfo.processInfo.environment
+guard
+    let inputPath = environment["ICON_INPUT"],
+    let outputPath = environment["ICON_OUTPUT"],
+    let sourceImage = NSImage(contentsOfFile: inputPath)
+else {
+    fputs("Failed to load icon source\n", stderr)
+    exit(1)
+}
+
+let canvasSize = NSSize(width: 1024, height: 1024)
+let insetScale: CGFloat = 0.82
+let scaledSize = NSSize(
+    width: canvasSize.width * insetScale,
+    height: canvasSize.height * insetScale
+)
+let origin = NSPoint(
+    x: (canvasSize.width - scaledSize.width) / 2,
+    y: (canvasSize.height - scaledSize.height) / 2
+)
+
+guard let representation = NSBitmapImageRep(
+    bitmapDataPlanes: nil,
+    pixelsWide: Int(canvasSize.width),
+    pixelsHigh: Int(canvasSize.height),
+    bitsPerSample: 8,
+    samplesPerPixel: 4,
+    hasAlpha: true,
+    isPlanar: false,
+    colorSpaceName: .deviceRGB,
+    bytesPerRow: 0,
+    bitsPerPixel: 0
+) else {
+    fputs("Failed to create icon canvas\n", stderr)
+    exit(1)
+}
+
+representation.size = canvasSize
+NSGraphicsContext.saveGraphicsState()
+guard let context = NSGraphicsContext(bitmapImageRep: representation) else {
+    fputs("Failed to create graphics context\n", stderr)
+    exit(1)
+}
+NSGraphicsContext.current = context
+NSColor.clear.setFill()
+NSBezierPath(rect: NSRect(origin: .zero, size: canvasSize)).fill()
+sourceImage.draw(in: NSRect(origin: origin, size: scaledSize))
+NSGraphicsContext.restoreGraphicsState()
+
+guard let pngData = representation.representation(using: .png, properties: [:]) else {
+    fputs("Failed to encode icon\n", stderr)
+    exit(1)
+}
+
+try pngData.write(to: URL(fileURLWithPath: outputPath))
+SWIFT
 }
 
 cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
