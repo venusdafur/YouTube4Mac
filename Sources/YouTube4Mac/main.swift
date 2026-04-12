@@ -8,6 +8,7 @@ private enum AppConfig {
     static let githubURL = URL(string: "https://github.com/realcatdev/YouTube4Mac")!
     static let returnYouTubeDislikeAPI = URL(string: "https://returnyoutubedislikeapi.com/votes")!
     static let returnYouTubeDislikeMessageHandler = "youtube4macVideoChanged"
+    static let appleTVUserAgent = "Mozilla/5.0 (AppleTV; U; CPU OS 16_0 like Mac OS X; en-us) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 AppleTV/16A366"
 }
 
 private enum AppIconLoader {
@@ -179,9 +180,11 @@ private enum CookieImporter {
 struct WebView: NSViewRepresentable {
     let isAdBlockEnabled: Bool
     let isReturnYouTubeDislikeEnabled: Bool
+    let isAppleTVMode: Bool
+    let navigationState: NavigationState
 
     func makeCoordinator() -> Coordinator {
-        Coordinator()
+        Coordinator(navigationState: navigationState)
     }
 
     func makeNSView(context: Context) -> WKWebView {
@@ -499,6 +502,7 @@ struct WebView: NSViewRepresentable {
         applyPreferences(
             isAdBlockEnabled: isAdBlockEnabled,
             isReturnYouTubeDislikeEnabled: isReturnYouTubeDislikeEnabled,
+            isAppleTVMode: isAppleTVMode,
             to: webView
         )
         return webView
@@ -509,6 +513,7 @@ struct WebView: NSViewRepresentable {
         applyPreferences(
             isAdBlockEnabled: isAdBlockEnabled,
             isReturnYouTubeDislikeEnabled: isReturnYouTubeDislikeEnabled,
+            isAppleTVMode: isAppleTVMode,
             to: nsView
         )
         context.coordinator.loadIfNeeded(nsView)
@@ -517,6 +522,7 @@ struct WebView: NSViewRepresentable {
     private func applyPreferences(
         isAdBlockEnabled: Bool,
         isReturnYouTubeDislikeEnabled: Bool,
+        isAppleTVMode: Bool,
         to webView: WKWebView
     ) {
         webView.evaluateJavaScript(
@@ -529,6 +535,7 @@ struct WebView: NSViewRepresentable {
             })();
             """
         )
+        webView.customUserAgent = isAppleTVMode ? AppConfig.appleTVUserAgent : nil
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
@@ -537,10 +544,16 @@ struct WebView: NSViewRepresentable {
         private var isAdBlockEnabled = true
         private weak var webView: WKWebView?
         private var lastFetchedVideoID: String?
+        private let navigationState: NavigationState
 
+        init(navigationState: NavigationState) {
+            self.navigationState = navigationState
+            super.init()
+        }
         func installContentBlocker(into controller: WKUserContentController, for webView: WKWebView, isEnabled: Bool) {
             isAdBlockEnabled = isEnabled
             self.webView = webView
+            navigationState.update(with: webView)
             configureContentBlocker(in: controller) { [weak self] in
                 self?.didInstallBlocker = true
                 self?.loadIfNeeded(webView)
@@ -560,6 +573,7 @@ struct WebView: NSViewRepresentable {
                 self?.didInstallBlocker = true
                 webView.reload()
             }
+            navigationState.update(with: webView)
         }
 
         private func configureContentBlocker(in controller: WKUserContentController, completion: @escaping () -> Void) {
@@ -612,6 +626,10 @@ struct WebView: NSViewRepresentable {
             }
 
             decisionHandler(.allow)
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            navigationState.refresh()
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -790,6 +808,51 @@ private struct SettingsSecondaryButtonStyle: ButtonStyle {
     }
 }
 
+final class NavigationState: ObservableObject {
+    @Published private(set) var canGoBack = false
+    @Published private(set) var canGoForward = false
+
+    private weak var webView: WKWebView?
+
+    func update(with webView: WKWebView?) {
+        self.webView = webView
+        refresh()
+    }
+
+    func refresh() {
+        canGoBack = webView?.canGoBack ?? false
+        canGoForward = webView?.canGoForward ?? false
+    }
+
+    func goBack() {
+        webView?.goBack()
+    }
+
+    func goForward() {
+        webView?.goForward()
+    }
+}
+
+private struct NavigationControlButton: View {
+    let systemImage: String
+    let title: String
+    let action: () -> Void
+    let isEnabled: Bool
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.system(size: 13, weight: .semibold))
+                .frame(minWidth: 110)
+                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+        }
+        .buttonStyle(SettingsSecondaryButtonStyle())
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.45)
+    }
+}
+
 private struct CookieImportPanel: View {
     @Binding var cookieDomain: String
     @Binding var cookieText: String
@@ -853,6 +916,7 @@ private struct FirstLaunchSplashView: View {
     @Binding var selectedTab: SettingsTab
     @Binding var isAdBlockEnabled: Bool
     @Binding var isReturnYouTubeDislikeEnabled: Bool
+    @Binding var isAppleTVMode: Bool
     @Binding var cookieDomain: String
     @Binding var cookieText: String
     let cookieImportStatus: String?
@@ -898,6 +962,12 @@ private struct FirstLaunchSplashView: View {
                                 title: "Return YouTube Dislike",
                                 subtitle: "Fetch dislike counts from returnyoutubedislikeapi.com and show them next to the dislike button.",
                                 isOn: $isReturnYouTubeDislikeEnabled
+                            )
+
+                            SplashToggleRow(
+                                title: "Report as Apple TV",
+                                subtitle: "Tell YouTube the device is an Apple TV so it loads the TV layout and metadata.",
+                                isOn: $isAppleTVMode
                             )
                         }
                     } else {
@@ -946,10 +1016,12 @@ private struct FirstLaunchSplashView: View {
 struct ContentView: View {
     let appliedAdBlockEnabled: Bool
     let appliedReturnYouTubeDislikeEnabled: Bool
+    let appliedAppleTVMode: Bool
     let isShowingOnboarding: Bool
     let needsRestart: Bool
     @Binding var draftAdBlockEnabled: Bool
     @Binding var draftReturnYouTubeDislikeEnabled: Bool
+    @Binding var draftAppleTVMode: Bool
     @Binding var selectedSettingsTab: SettingsTab
     @Binding var cookieDomain: String
     @Binding var cookieText: String
@@ -958,12 +1030,15 @@ struct ContentView: View {
     let completeOnboarding: () -> Void
     let dismissRestartPrompt: () -> Void
     let quitApp: () -> Void
+    @ObservedObject var navigationState: NavigationState
 
     var body: some View {
         ZStack {
             WebView(
                 isAdBlockEnabled: appliedAdBlockEnabled,
-                isReturnYouTubeDislikeEnabled: appliedReturnYouTubeDislikeEnabled
+                isReturnYouTubeDislikeEnabled: appliedReturnYouTubeDislikeEnabled,
+                isAppleTVMode: appliedAppleTVMode,
+                navigationState: navigationState
             )
                 .ignoresSafeArea()
                 .blur(radius: (isShowingOnboarding || needsRestart) ? 18 : 0)
@@ -974,6 +1049,7 @@ struct ContentView: View {
                     selectedTab: $selectedSettingsTab,
                     isAdBlockEnabled: $draftAdBlockEnabled,
                     isReturnYouTubeDislikeEnabled: $draftReturnYouTubeDislikeEnabled,
+                    isAppleTVMode: $draftAppleTVMode,
                     cookieDomain: $cookieDomain,
                     cookieText: $cookieText,
                     cookieImportStatus: cookieImportStatus,
@@ -989,6 +1065,32 @@ struct ContentView: View {
                     quitAction: quitApp
                 )
                 .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            }
+
+            if !isShowingOnboarding && !needsRestart {
+                VStack {
+                    Spacer()
+                    HStack(spacing: 10) {
+                        NavigationControlButton(
+                            systemImage: "chevron.left",
+                            title: "Back",
+                            action: navigationState.goBack,
+                            isEnabled: navigationState.canGoBack
+                        )
+
+                        NavigationControlButton(
+                            systemImage: "chevron.right",
+                            title: "Forward",
+                            action: navigationState.goForward,
+                            isEnabled: navigationState.canGoForward
+                        )
+
+                        Spacer()
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 20)
+                    .frame(maxWidth: .infinity)
+                }
             }
         }
         .animation(.easeInOut(duration: 0.2), value: isShowingOnboarding || needsRestart)
@@ -1050,18 +1152,22 @@ private struct RestartRequiredView: View {
 struct YouTube4MacApp: App {
     @AppStorage("isAdBlockEnabled") private var isAdBlockEnabled = true
     @AppStorage("isReturnYouTubeDislikeEnabled") private var isReturnYouTubeDislikeEnabled = true
+    @AppStorage("isAppleTVMode") private var isAppleTVMode = false
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
 
     @State private var appliedAdBlockEnabled = true
     @State private var appliedReturnYouTubeDislikeEnabled = true
+    @State private var appliedAppleTVMode = false
     @State private var draftAdBlockEnabled = true
     @State private var draftReturnYouTubeDislikeEnabled = true
+    @State private var draftAppleTVMode = false
     @State private var isShowingSettings = false
     @State private var needsRestart = false
     @State private var selectedSettingsTab: SettingsTab = .general
     @State private var cookieDomain = ".youtube.com"
     @State private var cookieText = ""
     @State private var cookieImportStatus: String?
+    @StateObject private var navigationState = NavigationState()
 
     init() {
         AppIconLoader.apply()
@@ -1072,10 +1178,12 @@ struct YouTube4MacApp: App {
             ContentView(
                 appliedAdBlockEnabled: appliedAdBlockEnabled,
                 appliedReturnYouTubeDislikeEnabled: appliedReturnYouTubeDislikeEnabled,
+                appliedAppleTVMode: appliedAppleTVMode,
                 isShowingOnboarding: !hasCompletedOnboarding || isShowingSettings,
                 needsRestart: needsRestart,
                 draftAdBlockEnabled: $draftAdBlockEnabled,
                 draftReturnYouTubeDislikeEnabled: $draftReturnYouTubeDislikeEnabled,
+                draftAppleTVMode: $draftAppleTVMode,
                 selectedSettingsTab: $selectedSettingsTab,
                 cookieDomain: $cookieDomain,
                 cookieText: $cookieText,
@@ -1083,7 +1191,8 @@ struct YouTube4MacApp: App {
                 importCookies: importCookies,
                 completeOnboarding: completeOnboarding,
                 dismissRestartPrompt: { needsRestart = false },
-                quitApp: { NSApplication.shared.terminate(nil) }
+                quitApp: { NSApplication.shared.terminate(nil) },
+                navigationState: navigationState
             )
             .frame(minWidth: 980, minHeight: 680)
             .onAppear {
@@ -1108,11 +1217,13 @@ struct YouTube4MacApp: App {
     private func syncAppliedState() {
         appliedAdBlockEnabled = isAdBlockEnabled
         appliedReturnYouTubeDislikeEnabled = isReturnYouTubeDislikeEnabled
+        appliedAppleTVMode = isAppleTVMode
     }
 
     private func syncDraftState() {
         draftAdBlockEnabled = isAdBlockEnabled
         draftReturnYouTubeDislikeEnabled = isReturnYouTubeDislikeEnabled
+        draftAppleTVMode = isAppleTVMode
     }
 
     private func importCookies() {
@@ -1131,8 +1242,10 @@ struct YouTube4MacApp: App {
         let didChange =
             draftAdBlockEnabled != isAdBlockEnabled ||
             draftReturnYouTubeDislikeEnabled != isReturnYouTubeDislikeEnabled
+            || draftAppleTVMode != isAppleTVMode
         isAdBlockEnabled = draftAdBlockEnabled
         isReturnYouTubeDislikeEnabled = draftReturnYouTubeDislikeEnabled
+        isAppleTVMode = draftAppleTVMode
         hasCompletedOnboarding = true
         isShowingSettings = false
         needsRestart = didChange
