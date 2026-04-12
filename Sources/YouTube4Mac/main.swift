@@ -5,7 +5,7 @@ import WebKit
 private enum AppConfig {
     static let homeURL = URL(string: "https://www.youtube.com")!
     static let adBlockerIdentifier = "YouTube4MacAdBlock"
-    static let githubURL = URL(string: "https://github.com/venusdafur/YouTube4Mac")!
+    static let githubURL = URL(string: "https://github.com/realcatdev/YouTube4Mac")!
     static let returnYouTubeDislikeAPI = URL(string: "https://returnyoutubedislikeapi.com/votes")!
     static let returnYouTubeDislikeMessageHandler = "youtube4macVideoChanged"
 }
@@ -923,7 +923,7 @@ private struct FirstLaunchSplashView: View {
                     .overlay(.white.opacity(0.08))
 
                 Link(destination: AppConfig.githubURL) {
-                    Text("github.com/venusdafur/YouTube4Mac")
+                    Text("github.com/realcatdev/YouTube4Mac")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity)

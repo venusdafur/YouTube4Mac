@@ -44,7 +44,7 @@ build_iconset() {
     local padded_icon="$RESOURCES_DIR/AppIcon.png"
 
     extract_icon_png
-    sips -p 1024 1024 --padColor 000000 "$icon_source" --out "$padded_icon" >/dev/null
+    sips -z 1024 1024 "$icon_source" --out "$padded_icon" >/dev/null
 }
 
 cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
