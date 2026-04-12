@@ -200,6 +200,178 @@ struct WebView: NSViewRepresentable {
             WKUserScript(
                 source: """
                     (() => {
+                        window.youtube4macAdBlockEnabled = true;
+
+                        const blockedRequestPatterns = [
+                            /doubleclick\\.net/i,
+                            /googlesyndication\\.com/i,
+                            /googleadservices\\.com/i,
+                            /googletagmanager\\.com/i,
+                            /youtube\\.com\\/api\\/stats\\/ads/i,
+                            /youtube\\.com\\/pagead\\//i,
+                            /youtubei\\/v1\\/log_event/i,
+                            /youtubei\\/v1\\/ad_/i,
+                            /youtubei\\/v1\\/player\\/ad_break/i
+                        ];
+
+                        const jsonResponsePatterns = [
+                            /youtubei\\/v1\\/(browse|next|player|search|guide|reel\\/reel_item_watch)/i
+                        ];
+
+                        const adKeys = new Set([
+                            'adPlacements',
+                            'adPlacementRenderer',
+                            'playerAds',
+                            'adSlots',
+                            'streamingDataAds',
+                            'adBreakHeartbeatParams',
+                            'adSafetyReason',
+                            'adLoggingData',
+                            'showCompanion',
+                            'mealbarPromoRenderer'
+                        ]);
+
+                        const isBlockedRequest = (url) => blockedRequestPatterns.some((pattern) => pattern.test(url));
+                        const shouldSanitizeJSON = (url, contentType) => {
+                            return jsonResponsePatterns.some((pattern) => pattern.test(url)) ||
+                                /application\\/json|text\\/json/i.test(contentType || '');
+                        };
+
+                        const stripAds = (value) => {
+                            if (Array.isArray(value)) {
+                                return value
+                                    .map(stripAds)
+                                    .filter((item) => {
+                                        if (!item || typeof item != 'object') {
+                                            return true;
+                                        }
+
+                                        const serialized = JSON.stringify(item);
+                                        return !/adSlotRenderer|displayAdRenderer|promotedSparkles|instreamAdPlayerOverlayRenderer|mealbarPromoRenderer/i.test(serialized);
+                                    });
+                            }
+
+                            if (!value || typeof value != 'object') {
+                                return value;
+                            }
+
+                            for (const key of Object.keys(value)) {
+                                if (adKeys.has(key)) {
+                                    delete value[key];
+                                    continue;
+                                }
+
+                                value[key] = stripAds(value[key]);
+                            }
+
+                            return value;
+                        };
+
+                        const sanitizeJSONText = (text) => {
+                            try {
+                                const parsed = JSON.parse(text);
+                                return JSON.stringify(stripAds(parsed));
+                            } catch {
+                                return text;
+                            }
+                        };
+
+                        const makeSyntheticResponse = (url) => {
+                            const body = /json|youtubei/i.test(url) ? '{}' : '';
+                            const contentType = body ? 'application/json' : 'text/plain';
+                            return new Response(body, {
+                                status: 200,
+                                headers: {
+                                    'Content-Type': contentType
+                                }
+                            });
+                        };
+
+                        const originalFetch = window.fetch.bind(window);
+                        window.fetch = async (...args) => {
+                            const request = args[0];
+                            const url = typeof request == 'string' ? request : request?.url || '';
+
+                            if (window.youtube4macAdBlockEnabled && isBlockedRequest(url)) {
+                                return makeSyntheticResponse(url);
+                            }
+
+                            const response = await originalFetch(...args);
+                            if (!window.youtube4macAdBlockEnabled) {
+                                return response;
+                            }
+
+                            const contentType = response.headers.get('content-type') || '';
+                            if (!shouldSanitizeJSON(url, contentType)) {
+                                return response;
+                            }
+
+                            const text = await response.text();
+                            const sanitized = sanitizeJSONText(text);
+                            return new Response(sanitized, {
+                                status: response.status,
+                                statusText: response.statusText,
+                                headers: response.headers
+                            });
+                        };
+
+                        const OriginalXHR = window.XMLHttpRequest;
+                        function PatchedXHR() {
+                            const xhr = new OriginalXHR();
+                            let requestURL = '';
+
+                            const open = xhr.open;
+                            xhr.open = function(method, url, ...rest) {
+                                requestURL = String(url || '');
+                                return open.call(this, method, url, ...rest);
+                            };
+
+                            const send = xhr.send;
+                            xhr.send = function(...args) {
+                                if (window.youtube4macAdBlockEnabled && isBlockedRequest(requestURL)) {
+                                    setTimeout(() => {
+                                        Object.defineProperty(xhr, 'readyState', { configurable: true, value: 4 });
+                                        Object.defineProperty(xhr, 'status', { configurable: true, value: 200 });
+                                        Object.defineProperty(xhr, 'responseText', { configurable: true, value: '{}' });
+                                        Object.defineProperty(xhr, 'response', { configurable: true, value: '{}' });
+                                        xhr.onreadystatechange?.(new Event('readystatechange'));
+                                        xhr.onload?.(new Event('load'));
+                                    }, 0);
+                                    return;
+                                }
+
+                                xhr.addEventListener('readystatechange', () => {
+                                    if (
+                                        !window.youtube4macAdBlockEnabled ||
+                                        xhr.readyState != 4 ||
+                                        !shouldSanitizeJSON(requestURL, xhr.getResponseHeader?.('content-type') || '')
+                                    ) {
+                                        return;
+                                    }
+
+                                    try {
+                                        const sanitized = sanitizeJSONText(xhr.responseText || '');
+                                        Object.defineProperty(xhr, 'responseText', { configurable: true, value: sanitized });
+                                        Object.defineProperty(xhr, 'response', { configurable: true, value: sanitized });
+                                    } catch {}
+                                });
+
+                                return send.apply(this, args);
+                            };
+
+                            return xhr;
+                        }
+                        window.XMLHttpRequest = PatchedXHR;
+                    })();
+                    """,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+        )
+        controller.addUserScript(
+            WKUserScript(
+                source: """
+                    (() => {
                         const pickTVScaleTarget = () => {
                             const candidates = [
                                 document.querySelector('ytlr-guide-response-container'),
@@ -324,6 +496,9 @@ struct WebView: NSViewRepresentable {
                             'ytd-display-ad-renderer',
                             'ytd-ad-slot-renderer',
                             'ytd-player-legacy-desktop-watch-ads-renderer',
+                            'ytd-engagement-panel-section-list-renderer[target-id*="engagement-panel-ads"]',
+                            'ytd-banner-promo-renderer',
+                            'ytd-statement-banner-renderer',
                             'ytd-reel-video-renderer ytd-ad-slot-renderer',
                             'ytd-video-masthead-ad-v3-renderer',
                             'ytd-in-feed-ad-layout-renderer',
@@ -335,9 +510,24 @@ struct WebView: NSViewRepresentable {
                             '.ytp-ad-overlay-container',
                             '.ytp-ad-message-container',
                             '.ytp-ad-image-overlay',
+                            '.ytp-featured-product',
+                            '.ytp-suggested-action-badge',
+                            '.video-ads',
                             '.ytd-in-feed-ad-layout-renderer',
                             '[layout*="display-ad-renderer"]',
                             '[class*="ytd-display-ad-renderer"]'
+                        ];
+
+                        const sponsoredContainerSelectors = [
+                            'ytd-rich-item-renderer',
+                            'ytd-video-renderer',
+                            'ytd-compact-video-renderer',
+                            'ytd-grid-video-renderer',
+                            'ytlr-rich-grid-row > *',
+                            'ytlr-rich-grid-renderer > *',
+                            'ytlr-item-section-renderer > *',
+                            'ytlr-section-list-renderer > *',
+                            'ytlr-guide-response-container > *'
                         ];
 
                         const ensureStyle = () => {
@@ -360,6 +550,15 @@ struct WebView: NSViewRepresentable {
                                 document.querySelectorAll(selector).forEach((node) => node.remove());
                             });
 
+                            document.querySelectorAll('[class*="ad-"], [id*="ad-"], [id^="ad_"]').forEach((node) => {
+                                if (
+                                    node instanceof HTMLElement &&
+                                    /banner|masthead|companion|promoted|sponsor/i.test(node.className + ' ' + node.id)
+                                ) {
+                                    node.remove();
+                                }
+                            });
+
                             document.querySelectorAll('ytd-rich-item-renderer, ytd-compact-video-renderer, ytd-video-renderer').forEach((node) => {
                                 if (
                                     node.querySelector('ytd-display-ad-renderer, ytd-ad-slot-renderer, [badge-style-type=\"BADGE_STYLE_TYPE_AD\"]') ||
@@ -369,12 +568,29 @@ struct WebView: NSViewRepresentable {
                                 }
                             });
 
+                            document.querySelectorAll(sponsoredContainerSelectors.join(',')).forEach((node) => {
+                                const text = (node.textContent || '').replace(/\\s+/g, ' ').trim();
+                                if (
+                                    /(^|\\s)sponsored(\\s|$)/i.test(text) ||
+                                    /press and hold for ad options/i.test(text) ||
+                                    /promoted/i.test(text)
+                                ) {
+                                    node.remove();
+                                }
+                            });
+
                             document.querySelector('.ytp-ad-skip-button, .ytp-skip-ad-button, .ytp-ad-skip-button-modern')?.click();
+                            document.querySelector('.ytp-ad-overlay-close-button')?.click();
 
                             const video = document.querySelector('video');
                             if (video && document.querySelector('.ad-showing')) {
                                 const duration = Number.isFinite(video.duration) ? video.duration : 0;
                                 video.currentTime = duration > 0 ? duration : 9999;
+                            }
+
+                            if (document.querySelector('.ad-showing')) {
+                                document.documentElement.classList.remove('ad-showing');
+                                document.body?.classList?.remove('ad-showing');
                             }
                         };
 
@@ -383,6 +599,7 @@ struct WebView: NSViewRepresentable {
                         };
 
                         hideAds();
+                        setInterval(hideAds, 1200);
                         new MutationObserver(hideAds).observe(document.documentElement, {
                             childList: true,
                             subtree: true
@@ -549,7 +766,23 @@ struct WebView: NSViewRepresentable {
               },
               {
                 "trigger": {
+                  "url-filter": "https?://([A-Za-z0-9.-]+\\\\.)?youtube\\\\.com/pagead/.*"
+                },
+                "action": {
+                  "type": "block"
+                }
+              },
+              {
+                "trigger": {
                   "url-filter": "https?://([A-Za-z0-9.-]+\\\\.)?youtubei\\\\.googleapis\\\\.com/.*ad.*"
+                },
+                "action": {
+                  "type": "block"
+                }
+              },
+              {
+                "trigger": {
+                  "url-filter": "https?://([A-Za-z0-9.-]+\\\\.)?youtubei\\\\.googleapis\\\\.com/youtubei/v1/log_event.*"
                 },
                 "action": {
                   "type": "block"
@@ -562,7 +795,7 @@ struct WebView: NSViewRepresentable {
                 },
                 "action": {
                   "type": "css-display-none",
-                  "selector": "ytd-display-ad-renderer, ytd-ad-slot-renderer, ytd-video-masthead-ad-v3-renderer, ytd-in-feed-ad-layout-renderer, ytm-promoted-sparkles-web-renderer, .ytd-promoted-sparkles-web-renderer, .ytp-ad-overlay-container, .ytp-ad-message-container"
+                  "selector": "ytd-display-ad-renderer, ytd-ad-slot-renderer, ytd-video-masthead-ad-v3-renderer, ytd-in-feed-ad-layout-renderer, ytm-promoted-sparkles-web-renderer, .ytd-promoted-sparkles-web-renderer, .ytp-ad-overlay-container, .ytp-ad-message-container, .ytp-ad-image-overlay, .ytp-ad-module, .video-ads, ytd-banner-promo-renderer"
                 }
               }
             ]
