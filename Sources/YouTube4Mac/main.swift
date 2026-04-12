@@ -3,12 +3,17 @@ import SwiftUI
 import WebKit
 
 private enum AppConfig {
-    static let homeURL = URL(string: "https://www.youtube.com")!
+    static let standardHomeURL = URL(string: "https://www.youtube.com")!
+    static let appleTVHomeURL = URL(string: "https://www.youtube.com/tv#/browse")!
     static let adBlockerIdentifier = "YouTube4MacAdBlock"
     static let githubURL = URL(string: "https://github.com/realcatdev/YouTube4Mac")!
     static let returnYouTubeDislikeAPI = URL(string: "https://returnyoutubedislikeapi.com/votes")!
     static let returnYouTubeDislikeMessageHandler = "youtube4macVideoChanged"
-    static let appleTVUserAgent = "Mozilla/5.0 (AppleTV; U; CPU OS 16_0 like Mac OS X; en-us) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 AppleTV/16A366"
+    static let appleTVUserAgent = "Roku/DVP-9.10 (519.10E04111A)"
+
+    static func homeURL(isAppleTVMode: Bool) -> URL {
+        isAppleTVMode ? appleTVHomeURL : standardHomeURL
+    }
 }
 
 private enum AppIconLoader {
@@ -202,12 +207,19 @@ struct WebView: NSViewRepresentable {
                         const selectors = [
                             'ytd-display-ad-renderer',
                             'ytd-ad-slot-renderer',
+                            'ytd-player-legacy-desktop-watch-ads-renderer',
+                            'ytd-reel-video-renderer ytd-ad-slot-renderer',
                             'ytd-video-masthead-ad-v3-renderer',
                             'ytd-in-feed-ad-layout-renderer',
+                            'ytd-rich-item-renderer:has(ytd-display-ad-renderer)',
+                            'ytd-rich-item-renderer:has(ytd-ad-slot-renderer)',
                             'ytm-promoted-sparkles-web-renderer',
                             '.ytd-promoted-sparkles-web-renderer',
+                            '.ytp-ad-module',
                             '.ytp-ad-overlay-container',
                             '.ytp-ad-message-container',
+                            '.ytp-ad-image-overlay',
+                            '.ytd-in-feed-ad-layout-renderer',
                             '[layout*="display-ad-renderer"]',
                             '[class*="ytd-display-ad-renderer"]'
                         ];
@@ -230,6 +242,15 @@ struct WebView: NSViewRepresentable {
 
                             selectors.forEach((selector) => {
                                 document.querySelectorAll(selector).forEach((node) => node.remove());
+                            });
+
+                            document.querySelectorAll('ytd-rich-item-renderer, ytd-compact-video-renderer, ytd-video-renderer').forEach((node) => {
+                                if (
+                                    node.querySelector('ytd-display-ad-renderer, ytd-ad-slot-renderer, [badge-style-type=\"BADGE_STYLE_TYPE_AD\"]') ||
+                                    /(^|\\s)sponsored(\\s|$)/i.test(node.textContent || '')
+                                ) {
+                                    node.remove();
+                                }
                             });
 
                             document.querySelector('.ytp-ad-skip-button, .ytp-skip-ad-button, .ytp-ad-skip-button-modern')?.click();
@@ -498,11 +519,16 @@ struct WebView: NSViewRepresentable {
         webView.allowsBackForwardNavigationGestures = true
         webView.navigationDelegate = context.coordinator
         webView.setValue(false, forKey: "drawsBackground")
-        context.coordinator.installContentBlocker(into: controller, for: webView, isEnabled: isAdBlockEnabled)
+        webView.customUserAgent = isAppleTVMode ? AppConfig.appleTVUserAgent : nil
+        context.coordinator.installContentBlocker(
+            into: controller,
+            for: webView,
+            isEnabled: isAdBlockEnabled,
+            isAppleTVMode: isAppleTVMode
+        )
         applyPreferences(
             isAdBlockEnabled: isAdBlockEnabled,
             isReturnYouTubeDislikeEnabled: isReturnYouTubeDislikeEnabled,
-            isAppleTVMode: isAppleTVMode,
             to: webView
         )
         return webView
@@ -510,10 +536,10 @@ struct WebView: NSViewRepresentable {
 
     func updateNSView(_ nsView: WKWebView, context: Context) {
         context.coordinator.updateAdBlockState(isAdBlockEnabled, for: nsView)
+        context.coordinator.updateDeviceMode(isAppleTVMode, for: nsView)
         applyPreferences(
             isAdBlockEnabled: isAdBlockEnabled,
             isReturnYouTubeDislikeEnabled: isReturnYouTubeDislikeEnabled,
-            isAppleTVMode: isAppleTVMode,
             to: nsView
         )
         context.coordinator.loadIfNeeded(nsView)
@@ -522,7 +548,6 @@ struct WebView: NSViewRepresentable {
     private func applyPreferences(
         isAdBlockEnabled: Bool,
         isReturnYouTubeDislikeEnabled: Bool,
-        isAppleTVMode: Bool,
         to webView: WKWebView
     ) {
         webView.evaluateJavaScript(
@@ -535,13 +560,13 @@ struct WebView: NSViewRepresentable {
             })();
             """
         )
-        webView.customUserAgent = isAppleTVMode ? AppConfig.appleTVUserAgent : nil
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         private var didInstallBlocker = false
         private var didStartInitialLoad = false
         private var isAdBlockEnabled = true
+        private var isAppleTVMode = false
         private weak var webView: WKWebView?
         private var lastFetchedVideoID: String?
         private let navigationState: NavigationState
@@ -550,14 +575,29 @@ struct WebView: NSViewRepresentable {
             self.navigationState = navigationState
             super.init()
         }
-        func installContentBlocker(into controller: WKUserContentController, for webView: WKWebView, isEnabled: Bool) {
+        func installContentBlocker(
+            into controller: WKUserContentController,
+            for webView: WKWebView,
+            isEnabled: Bool,
+            isAppleTVMode: Bool
+        ) {
             isAdBlockEnabled = isEnabled
+            self.isAppleTVMode = isAppleTVMode
             self.webView = webView
             navigationState.update(with: webView)
             configureContentBlocker(in: controller) { [weak self] in
                 self?.didInstallBlocker = true
                 self?.loadIfNeeded(webView)
             }
+        }
+
+        func updateDeviceMode(_ isAppleTVMode: Bool, for webView: WKWebView) {
+            guard self.isAppleTVMode != isAppleTVMode else { return }
+            self.isAppleTVMode = isAppleTVMode
+            lastFetchedVideoID = nil
+            webView.customUserAgent = isAppleTVMode ? AppConfig.appleTVUserAgent : nil
+            webView.load(URLRequest(url: AppConfig.homeURL(isAppleTVMode: isAppleTVMode)))
+            navigationState.update(with: webView)
         }
 
         func updateAdBlockState(_ isEnabled: Bool, for webView: WKWebView) {
@@ -611,7 +651,7 @@ struct WebView: NSViewRepresentable {
         func loadIfNeeded(_ webView: WKWebView) {
             guard didInstallBlocker, !didStartInitialLoad else { return }
             didStartInitialLoad = true
-            webView.load(URLRequest(url: AppConfig.homeURL))
+            webView.load(URLRequest(url: AppConfig.homeURL(isAppleTVMode: isAppleTVMode)))
         }
 
         func webView(
@@ -820,16 +860,26 @@ final class NavigationState: ObservableObject {
     }
 
     func refresh() {
-        canGoBack = webView?.canGoBack ?? false
-        canGoForward = webView?.canGoForward ?? false
+        canGoBack = webView != nil
+        canGoForward = webView != nil
     }
 
     func goBack() {
-        webView?.goBack()
+        guard let webView else { return }
+        if webView.canGoBack {
+            webView.goBack()
+        } else {
+            webView.evaluateJavaScript("history.back();")
+        }
     }
 
     func goForward() {
-        webView?.goForward()
+        guard let webView else { return }
+        if webView.canGoForward {
+            webView.goForward()
+        } else {
+            webView.evaluateJavaScript("history.forward();")
+        }
     }
 }
 
@@ -1170,6 +1220,17 @@ struct YouTube4MacApp: App {
     @StateObject private var navigationState = NavigationState()
 
     init() {
+        let defaults = UserDefaults.standard
+        let savedAdBlockEnabled = defaults.object(forKey: "isAdBlockEnabled") as? Bool ?? true
+        let savedReturnYouTubeDislikeEnabled = defaults.object(forKey: "isReturnYouTubeDislikeEnabled") as? Bool ?? true
+        let savedAppleTVMode = defaults.object(forKey: "isAppleTVMode") as? Bool ?? false
+
+        _appliedAdBlockEnabled = State(initialValue: savedAdBlockEnabled)
+        _appliedReturnYouTubeDislikeEnabled = State(initialValue: savedReturnYouTubeDislikeEnabled)
+        _appliedAppleTVMode = State(initialValue: savedAppleTVMode)
+        _draftAdBlockEnabled = State(initialValue: savedAdBlockEnabled)
+        _draftReturnYouTubeDislikeEnabled = State(initialValue: savedReturnYouTubeDislikeEnabled)
+        _draftAppleTVMode = State(initialValue: savedAppleTVMode)
         AppIconLoader.apply()
     }
 
