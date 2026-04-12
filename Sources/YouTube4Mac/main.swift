@@ -184,7 +184,6 @@ private enum CookieImporter {
 }
 
 struct WebView: NSViewRepresentable {
-    let isAdBlockEnabled: Bool
     let isReturnYouTubeDislikeEnabled: Bool
     let isAppleTVMode: Bool
 
@@ -643,11 +642,11 @@ struct WebView: NSViewRepresentable {
         context.coordinator.installContentBlocker(
             into: controller,
             for: webView,
-            isEnabled: isAdBlockEnabled,
+            isEnabled: true,
             isAppleTVMode: isAppleTVMode
         )
         applyPreferences(
-            isAdBlockEnabled: isAdBlockEnabled,
+            isAdBlockEnabled: true,
             isReturnYouTubeDislikeEnabled: isReturnYouTubeDislikeEnabled,
             isAppleTVMode: isAppleTVMode,
             to: webView
@@ -656,10 +655,9 @@ struct WebView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: WKWebView, context: Context) {
-        context.coordinator.updateAdBlockState(isAdBlockEnabled, for: nsView)
         context.coordinator.updateDeviceMode(isAppleTVMode, for: nsView)
         applyPreferences(
-            isAdBlockEnabled: isAdBlockEnabled,
+            isAdBlockEnabled: true,
             isReturnYouTubeDislikeEnabled: isReturnYouTubeDislikeEnabled,
             isAppleTVMode: isAppleTVMode,
             to: nsView
@@ -716,21 +714,6 @@ struct WebView: NSViewRepresentable {
             lastFetchedVideoID = nil
             webView.customUserAgent = isAppleTVMode ? AppConfig.appleTVUserAgent : nil
             webView.load(URLRequest(url: AppConfig.homeURL(isAppleTVMode: isAppleTVMode)))
-        }
-
-        func updateAdBlockState(_ isEnabled: Bool, for webView: WKWebView) {
-            guard isAdBlockEnabled != isEnabled else { return }
-            isAdBlockEnabled = isEnabled
-
-            guard let controller = webView.configuration.userContentController as WKUserContentController? else {
-                return
-            }
-
-            didInstallBlocker = false
-            configureContentBlocker(in: controller) { [weak self] in
-                self?.didInstallBlocker = true
-                webView.reload()
-            }
         }
 
         private func configureContentBlocker(in controller: WKUserContentController, completion: @escaping () -> Void) {
@@ -1028,7 +1011,6 @@ private struct CookieImportPanel: View {
 
 private struct FirstLaunchSplashView: View {
     @Binding var selectedTab: SettingsTab
-    @Binding var isAdBlockEnabled: Bool
     @Binding var isReturnYouTubeDislikeEnabled: Bool
     @Binding var isAppleTVMode: Bool
     @Binding var cookieDomain: String
@@ -1066,12 +1048,6 @@ private struct FirstLaunchSplashView: View {
 
                     if selectedTab == .general {
                         VStack(spacing: 12) {
-                            SplashToggleRow(
-                                title: "Enable ad blocking",
-                                subtitle: "Hide common YouTube ad surfaces and block common ad requests. Enabled by default.",
-                                isOn: $isAdBlockEnabled
-                            )
-
                             SplashToggleRow(
                                 title: "Return YouTube Dislike",
                                 subtitle: "Fetch dislike counts from returnyoutubedislikeapi.com and show them next to the dislike button.",
@@ -1128,12 +1104,10 @@ private struct FirstLaunchSplashView: View {
 }
 
 struct ContentView: View {
-    let appliedAdBlockEnabled: Bool
     let appliedReturnYouTubeDislikeEnabled: Bool
     let appliedAppleTVMode: Bool
     let isShowingOnboarding: Bool
     let needsRestart: Bool
-    @Binding var draftAdBlockEnabled: Bool
     @Binding var draftReturnYouTubeDislikeEnabled: Bool
     @Binding var draftAppleTVMode: Bool
     @Binding var selectedSettingsTab: SettingsTab
@@ -1148,7 +1122,6 @@ struct ContentView: View {
     var body: some View {
         ZStack {
             WebView(
-                isAdBlockEnabled: appliedAdBlockEnabled,
                 isReturnYouTubeDislikeEnabled: appliedReturnYouTubeDislikeEnabled,
                 isAppleTVMode: appliedAppleTVMode
             )
@@ -1159,7 +1132,6 @@ struct ContentView: View {
             if isShowingOnboarding {
                 FirstLaunchSplashView(
                     selectedTab: $selectedSettingsTab,
-                    isAdBlockEnabled: $draftAdBlockEnabled,
                     isReturnYouTubeDislikeEnabled: $draftReturnYouTubeDislikeEnabled,
                     isAppleTVMode: $draftAppleTVMode,
                     cookieDomain: $cookieDomain,
@@ -1197,7 +1169,7 @@ private struct RestartRequiredView: View {
                 Text("Restart Required")
                     .font(.system(size: 28, weight: .bold, design: .rounded))
 
-                Text("Settings were saved. Restart the app to apply the new appearance or ad block configuration.")
+                Text("Settings were saved. Restart the app to apply the new configuration.")
                     .font(.system(size: 14))
                     .foregroundStyle(.secondary)
 
@@ -1236,15 +1208,12 @@ private struct RestartRequiredView: View {
 
 @main
 struct YouTube4MacApp: App {
-    @AppStorage("isAdBlockEnabled") private var isAdBlockEnabled = true
     @AppStorage("isReturnYouTubeDislikeEnabled") private var isReturnYouTubeDislikeEnabled = true
     @AppStorage("isAppleTVMode") private var isAppleTVMode = false
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
 
-    @State private var appliedAdBlockEnabled = true
     @State private var appliedReturnYouTubeDislikeEnabled = true
     @State private var appliedAppleTVMode = false
-    @State private var draftAdBlockEnabled = true
     @State private var draftReturnYouTubeDislikeEnabled = true
     @State private var draftAppleTVMode = false
     @State private var isShowingSettings = false
@@ -1256,14 +1225,11 @@ struct YouTube4MacApp: App {
 
     init() {
         let defaults = UserDefaults.standard
-        let savedAdBlockEnabled = defaults.object(forKey: "isAdBlockEnabled") as? Bool ?? true
         let savedReturnYouTubeDislikeEnabled = defaults.object(forKey: "isReturnYouTubeDislikeEnabled") as? Bool ?? true
         let savedAppleTVMode = defaults.object(forKey: "isAppleTVMode") as? Bool ?? false
 
-        _appliedAdBlockEnabled = State(initialValue: savedAdBlockEnabled)
         _appliedReturnYouTubeDislikeEnabled = State(initialValue: savedReturnYouTubeDislikeEnabled)
         _appliedAppleTVMode = State(initialValue: savedAppleTVMode)
-        _draftAdBlockEnabled = State(initialValue: savedAdBlockEnabled)
         _draftReturnYouTubeDislikeEnabled = State(initialValue: savedReturnYouTubeDislikeEnabled)
         _draftAppleTVMode = State(initialValue: savedAppleTVMode)
         AppIconLoader.apply()
@@ -1272,12 +1238,10 @@ struct YouTube4MacApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(
-                appliedAdBlockEnabled: appliedAdBlockEnabled,
                 appliedReturnYouTubeDislikeEnabled: appliedReturnYouTubeDislikeEnabled,
                 appliedAppleTVMode: appliedAppleTVMode,
                 isShowingOnboarding: !hasCompletedOnboarding || isShowingSettings,
                 needsRestart: needsRestart,
-                draftAdBlockEnabled: $draftAdBlockEnabled,
                 draftReturnYouTubeDislikeEnabled: $draftReturnYouTubeDislikeEnabled,
                 draftAppleTVMode: $draftAppleTVMode,
                 selectedSettingsTab: $selectedSettingsTab,
@@ -1310,13 +1274,11 @@ struct YouTube4MacApp: App {
     }
 
     private func syncAppliedState() {
-        appliedAdBlockEnabled = isAdBlockEnabled
         appliedReturnYouTubeDislikeEnabled = isReturnYouTubeDislikeEnabled
         appliedAppleTVMode = isAppleTVMode
     }
 
     private func syncDraftState() {
-        draftAdBlockEnabled = isAdBlockEnabled
         draftReturnYouTubeDislikeEnabled = isReturnYouTubeDislikeEnabled
         draftAppleTVMode = isAppleTVMode
     }
@@ -1335,10 +1297,8 @@ struct YouTube4MacApp: App {
 
     private func completeOnboarding() {
         let didChange =
-            draftAdBlockEnabled != isAdBlockEnabled ||
             draftReturnYouTubeDislikeEnabled != isReturnYouTubeDislikeEnabled
             || draftAppleTVMode != isAppleTVMode
-        isAdBlockEnabled = draftAdBlockEnabled
         isReturnYouTubeDislikeEnabled = draftReturnYouTubeDislikeEnabled
         isAppleTVMode = draftAppleTVMode
         hasCompletedOnboarding = true
